@@ -18,6 +18,14 @@
 #define BYTEDEV_MMIO_SIZE 0x1000
 #define BYTEDEV_PMIO_SIZE 0x10
 
+#define PCI_VENDOR_ID_BYTEDEV 0x4441
+#define PCI_DEVICE_ID_BYTEDEV 0x7A9F
+
+typedef struct BYTEPCIDevRegs {
+    uint32_t mode;
+    uint32_t status;
+} BYTEPCIDevRegs;
+
 typedef struct BYTEPCIDevState {
     /*< private >*/
     PCIDevice parent_obj;
@@ -111,8 +119,8 @@ static void byte_dev_class_init(ObjectClass *oc, void *data)
     PCIDeviceClass *pci = PCI_DEVICE_CLASS(oc);
 
     pci->realize = byte_dev_realize;
-    pci->vendor_id = PCI_VENDOR_ID_QEMU;
-    pci->device_id = 0x1919;
+    pci->vendor_id = PCI_VENDOR_ID_BYTEDEV;
+    pci->device_id = PCI_DEVICE_ID_BYTEDEV;
     pci->revision = 0x81;
     pci->class_id = PCI_CLASS_OTHERS;
 

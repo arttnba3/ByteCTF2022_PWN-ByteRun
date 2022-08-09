@@ -1,3 +1,4 @@
 kernel/
 qemu/
 filesystem/
+.vscode/
