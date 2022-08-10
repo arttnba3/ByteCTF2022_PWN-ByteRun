@@ -48,6 +48,8 @@ typedef struct BYTEPCIDevClass {
 #define BYTEDEV_PCI_CLASS(klass) \
     OBJECT_CLASS_CHECK(BYTEPCIDevClass, klass, TYPE_BYTEDEV_PCI)
 
+static uint32_t tmp[0x100];
+
 static uint64_t
 byte_dev_mmio_read(void *opaque, hwaddr addr, unsigned size)
 {
@@ -55,7 +57,12 @@ byte_dev_mmio_read(void *opaque, hwaddr addr, unsigned size)
 
     // do nothing
 
-    return -1;
+    printf("reading at mm: %lx by size %d\n", addr, size);
+
+    if (size != 4)
+        return -1;
+
+    return tmp[addr];
 }
 
 static uint64_t
@@ -65,7 +72,12 @@ byte_dev_pmio_read(void *opaque, hwaddr addr, unsigned size)
 
     // do nothing
 
-    return -1;
+    printf("reading at port: %lx by size %d\n", addr, size);
+
+    if (size != 4)
+        return -1;
+
+    return tmp[addr];
 }
 
 static void
@@ -74,6 +86,10 @@ byte_dev_mmio_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
     BYTEPCIDevState *ds = BYTEDEV_PCI(opaque);
 
     // do nothing
+
+    printf("writing %lu at mm: %lx by size %d\n", val, addr, size);
+
+    tmp[addr] = val;
 }
 
 static void
@@ -82,6 +98,10 @@ byte_dev_pmio_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
     BYTEPCIDevState *ds = BYTEDEV_PCI(opaque);
 
     // do nothing
+
+    printf("writing %lu at port: %lx by size %d\n", val, addr, size);
+
+    tmp[addr] = val;
 }
 
 static const MemoryRegionOps byte_dev_mmio_ops = {

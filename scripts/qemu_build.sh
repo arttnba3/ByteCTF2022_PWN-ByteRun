@@ -28,7 +28,11 @@ cd build
     --enable-kvm \
     --target-list=x86_64-softmmu \
     --enable-debug
-make
-cp ./qemu-system-x86_64 ../../environ/
-cp -r ./pc-bios/ ../../environ/
-echo "done!"
+if make
+then
+    cp ./qemu-system-x86_64 ../../environ/
+    cp -r ./pc-bios/ ../../environ/
+    echo "done!"
+else
+    echo "failed to make!"
+fi
