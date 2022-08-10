@@ -14,6 +14,7 @@
 #include <linux/device.h>
 #include <linux/pci.h>
 #include <linux/virtio.h>
+#include <linux/types.h>
 #include <linux/cdev.h>
 
 #define DEVICE_NAME "bytedev"
@@ -32,18 +33,26 @@
 
 #define BYTEDEV_MODE_CHANGE 0x114514
 
-struct bytedev {
-    struct device   *dev_node;
-    int     minor_num;
-    void    *mmio_addr;
-    void    *pmio_addr;
+struct bytedev_pmio {
+    u32     mode;
+    u32     status;
 };
 
-static struct cdev bytedev_cdev;
-static struct class    *bytedev_class;
+struct bytedev {
+    struct device   *dev_node;
+    struct pci_dev  *pdev;
+    int minor_num;
+    u64 __iomem  *mmio_addr;
+    u64 io_base;
+};
+
+static struct bytedev *bytedev_arr[BYTEDEV_MAX_DEVICE_NUM];
+
+static struct cdev  bytedev_cdev;
+static struct class *bytedev_class;
 static int  bytedev_major_num;
 static int  bytedev_minor_num[BYTEDEV_MAX_DEVICE_NUM];
-static spinlock_t bytedev_lock_minor_num;
+static spinlock_t bytedev_lock_minor_num, bytedev_lock_ioctl;
 
 static int bytedev_open(struct inode *i, struct file *f);
 static ssize_t bytedev_read(struct file *f, 

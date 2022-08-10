@@ -7,6 +7,6 @@
     -initrd ./rootfs.cpio \
     -m 128M \
     -nographic \
-    -monitor /dev/null \
     -device byte_dev-pci \
-    -device byte_dev-pci
+    -device byte_dev-pci \
+    -no-reboot
