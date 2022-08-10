@@ -33,6 +33,13 @@
 
 #define BYTEDEV_MODE_CHANGE 0x114514
 
+enum BYTEDEV_REG {
+    BYTEDEV_REG_MODE = 0,
+    BYTEDEV_REG_STATUS,
+    BYTEDEV_REG_TX,
+    BYTEDEV_REG_RX,
+};
+
 struct bytedev_pmio {
     u32     mode;
     u32     status;
@@ -44,6 +51,9 @@ struct bytedev {
     int minor_num;
     u64 __iomem  *mmio_addr;
     u64 io_base;
+    void *tx_ring_desc;
+    void *rx_ring_desc;
+    void *data_buf;
 };
 
 static struct bytedev *bytedev_arr[BYTEDEV_MAX_DEVICE_NUM];
@@ -84,6 +94,10 @@ static const struct pci_device_id bytedev_ids[] = {
     { PCI_DEVICE(PCI_VENDOR_ID_BYTEDEV, PCI_DEVICE_ID_BYTEDEV) },
     { 0, },
 };
+
+static void bytedev_resource_release(struct bytedev *bytedev);
+static void bytedev_set_unused_minor_num(int minor);
+static int bytedev_get_unused_minor_num(void);
 
 MODULE_DEVICE_TABLE(pci, bytedev_ids);
 

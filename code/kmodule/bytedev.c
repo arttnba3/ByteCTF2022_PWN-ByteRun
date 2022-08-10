@@ -88,6 +88,7 @@ static void bytedev_set_unused_minor_num(int minor)
     /* You're trying to free an unused minor number, what? */
     if (!bytedev_minor_num[minor]) {
         printk(KERN_ERR "[bytedev:] Unable to free an unused minor num!");
+        BUG();
     } else {
         bytedev_minor_num[minor] = 0;
     }
@@ -227,7 +228,7 @@ static void bytedev_resource_release(struct bytedev *bytedev)
     pci_disable_device(bytedev->pdev);
     device_destroy(bytedev_class, 
                     MKDEV(bytedev_major_num, bytedev->minor_num));
-    bytedev_minor_num[bytedev->minor_num] = 0;
+    bytedev_set_unused_minor_num(bytedev->minor_num);
     kfree(bytedev);
 }
 
