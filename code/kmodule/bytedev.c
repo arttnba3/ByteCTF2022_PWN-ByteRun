@@ -20,6 +20,30 @@
 #include "bytedev.h"
 #include <linux/io.h>
 
+static inline uint32_t 
+bytedev_get_mode(struct bytedev *bytedev)
+{
+    return inl(bytedev->io_base + BYTEDEV_REG_MODE);
+}
+
+static inline void 
+bytedev_set_mode(struct bytedev *bytedev, int mode)
+{
+    outl(mode, bytedev->io_base + BYTEDEV_REG_MODE);
+}
+
+static inline uint32_t 
+bytedev_get_status(struct bytedev *bytedev)
+{
+    return inl(bytedev->io_base + BYTEDEV_REG_STATUS);
+}
+
+static inline void 
+bytedev_set_status(struct bytedev *bytedev, int status)
+{
+    outl(status, bytedev->io_base + BYTEDEV_REG_STATUS);
+}
+
 static int bytedev_open(struct inode *i, struct file *f)
 {
     int minor = MINOR(i->i_rdev);
@@ -60,20 +84,25 @@ static long bytedev_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 
     switch (cmd) {
         case BYTEDEV_MODE_CHANGE:
+        case BYTEDEV_STATUS_CHANGE:
             if (!uid_eq(current_uid(), GLOBAL_ROOT_UID)) {
                 printk(KERN_ERR
                     "[bytedev:] Permission denied, root privilege needed."
                 );
                 err = -EACCES;
             } else {
-                //iowrite32();
-                printk(KERN_INFO
-                    "[bytedev:] device mode changed."
-                );
+                if (cmd == BYTEDEV_MODE_CHANGE) {
+                    bytedev_set_mode(bytedev, arg);
+                    printk(KERN_INFO "[bytedev:] device mode changed." );
+                } else {
+                    bytedev_set_status(bytedev, arg);
+                    printk(KERN_INFO "[bytedev:] device status changed." );
+                }
             }
             break;
         default:
             printk(KERN_ERR "[bytedev:] INVALID COMMAND!");
+            err = -EFAULT;
     }
 
     spin_unlock(&bytedev_lock_ioctl);
@@ -296,12 +325,6 @@ err_out:
 static void __exit bytedev_exit(void)
 {
     printk(KERN_INFO "[bytedev:] Start to clean up the module.\n");
-    
-    for (int i = 0; i < BYTEDEV_MAX_DEVICE_NUM; i++) {
-        if (bytedev_minor_num[i]) {
-            device_destroy(bytedev_class, MKDEV(bytedev_major_num, i));
-        }
-    }
     class_destroy(bytedev_class);
     unregister_chrdev_region(MKDEV(bytedev_major_num, 0), 
                             BYTEDEV_MAX_DEVICE_NUM);

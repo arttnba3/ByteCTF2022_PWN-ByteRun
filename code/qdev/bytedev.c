@@ -15,8 +15,16 @@
 #include "sysemu/kvm.h"
 #include "qom/object.h"
 
+enum BYTEDEV_REG {
+    BYTEDEV_REG_MODE = 0,
+    BYTEDEV_REG_STATUS,
+    BYTEDEV_REG_TX,
+    BYTEDEV_REG_RX,
+    BYTEDEV_REG_TYPES,
+};
+
 #define BYTEDEV_MMIO_SIZE 0x1000
-#define BYTEDEV_PMIO_SIZE 0x10
+#define BYTEDEV_PMIO_SIZE (BYTEDEV_REG_TYPES)
 
 #define PCI_VENDOR_ID_BYTEDEV 0x4441
 #define PCI_DEVICE_ID_BYTEDEV 0x7A9F
@@ -24,6 +32,8 @@
 typedef struct BYTEPCIDevRegs {
     uint32_t mode;
     uint32_t status;
+    uint32_t tx_addr;
+    uint32_t rx_addr;
 } BYTEPCIDevRegs;
 
 typedef struct BYTEPCIDevState {
@@ -33,6 +43,8 @@ typedef struct BYTEPCIDevState {
     /*< public >*/
     MemoryRegion mmio;
     MemoryRegion pmio;
+
+    BYTEPCIDevRegs regs;
 } BYTEPCIDevState;
 
 typedef struct BYTEPCIDevClass {
@@ -48,21 +60,15 @@ typedef struct BYTEPCIDevClass {
 #define BYTEDEV_PCI_CLASS(klass) \
     OBJECT_CLASS_CHECK(BYTEPCIDevClass, klass, TYPE_BYTEDEV_PCI)
 
-static uint32_t tmp[0x100];
-
 static uint64_t
 byte_dev_mmio_read(void *opaque, hwaddr addr, unsigned size)
 {
     BYTEPCIDevState *ds = BYTEDEV_PCI(opaque);
 
-    // do nothing
-
-    printf("reading at mm: %lx by size %d\n", addr, size);
-
     if (size != 4)
         return -1;
 
-    return tmp[addr];
+    return -1;
 }
 
 static uint64_t
@@ -70,14 +76,10 @@ byte_dev_pmio_read(void *opaque, hwaddr addr, unsigned size)
 {
     BYTEPCIDevState *ds = BYTEDEV_PCI(opaque);
 
-    // do nothing
-
-    printf("reading at port: %lx by size %d\n", addr, size);
-
     if (size != 4)
         return -1;
 
-    return tmp[addr];
+    return -1;
 }
 
 static void
@@ -85,11 +87,6 @@ byte_dev_mmio_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
     BYTEPCIDevState *ds = BYTEDEV_PCI(opaque);
 
-    // do nothing
-
-    printf("writing %lu at mm: %lx by size %d\n", val, addr, size);
-
-    tmp[addr] = val;
 }
 
 static void
@@ -97,23 +94,55 @@ byte_dev_pmio_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
     BYTEPCIDevState *ds = BYTEDEV_PCI(opaque);
 
-    // do nothing
+    if (size != 4) {
+        return ;
+    }
 
-    printf("writing %lu at port: %lx by size %d\n", val, addr, size);
+    switch (addr) {
+        case BYTEDEV_REG_MODE:
+            ds->regs.mode = val;
+            break;
+        case BYTEDEV_REG_STATUS:
+            ds->regs.status = val;
+            break;
+        case BYTEDEV_REG_TX:
+            ds->regs.tx_addr = val;
+            break;
+        case BYTEDEV_REG_RX:
+            ds->regs.rx_addr = val;
+            break;
+        default:
+            break;
+    }
 
-    tmp[addr] = val;
 }
 
 static const MemoryRegionOps byte_dev_mmio_ops = {
     .read = byte_dev_mmio_read,
     .write = byte_dev_mmio_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = {
+        .max_access_size = 8,
+        .min_access_size = 1,
+        .unaligned = true,
+    },
+    .impl = {
+        .unaligned = true,
+    },
 };
 
 static const MemoryRegionOps byte_dev_pmio_ops = {
     .read = byte_dev_pmio_read,
     .write = byte_dev_pmio_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = {
+        .max_access_size = 4,
+        .min_access_size = 1,
+        .unaligned = true,
+    },
+    .impl = {
+        .unaligned = true,
+    },
 };
 
 static void byte_dev_realize(PCIDevice *pci_dev, Error **errp)

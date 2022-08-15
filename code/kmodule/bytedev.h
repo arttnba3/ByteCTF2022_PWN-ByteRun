@@ -32,6 +32,7 @@
 #define BYTEDEV_MAX_DEVICE_NUM 256
 
 #define BYTEDEV_MODE_CHANGE 0x114514
+#define BYTEDEV_STATUS_CHANGE 0x1919810
 
 enum BYTEDEV_REG {
     BYTEDEV_REG_MODE = 0,
@@ -43,6 +44,14 @@ enum BYTEDEV_REG {
 struct bytedev_pmio {
     u32     mode;
     u32     status;
+    u32     tx_addr;
+    u32     rx_addr;
+};
+
+struct bytedev_msg {
+    struct bytedev_msg  *next;
+    size_t size;
+    char data[0];
 };
 
 struct bytedev {
