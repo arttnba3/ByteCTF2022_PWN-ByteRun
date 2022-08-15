@@ -21,8 +21,8 @@ cp $CODE_PATH/Kconfig $QEMU_PATH/hw/misc/
 cp $CODE_PATH/meson.build $QEMU_PATH/hw/misc/
 
 cd qemu/
-rm -rf ./build/
-mkdir build
+# rm -rf ./build/
+# mkdir build
 cd build
 ../qemu-7.0.0/configure \
     --enable-kvm \
