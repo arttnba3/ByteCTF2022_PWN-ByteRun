@@ -1,6 +1,4 @@
 #!/bin/sh
+gcc code/exp/exp.c -o filesystem/exp -static -masm=intel
 cd ./filesystem
-cp ../code/kmodule/bytedev.ko ./
-rm -r ./tmp/
-rm ./exp
 find . | cpio -o --format=newc > ../environ/rootfs.cpio
