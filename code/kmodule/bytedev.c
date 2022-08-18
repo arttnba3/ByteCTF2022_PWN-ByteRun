@@ -1,7 +1,7 @@
 /* 
  * ByteCTF2022 kernel module
  * 
- * Copyright (c) 2022 ByteDance Inc.
+ * Copyright (c) 2022 ByteDance Corp.
  * Author: arttnba3 <arttnba@gmail.com>
  * 
  * This module is developed for ByteCTF2022 - Pwn - ByteChain.
@@ -17,31 +17,60 @@
 #include <linux/cred.h>
 #include <asm-generic/iomap.h>
 #include <linux/cdev.h>
-#include "bytedev.h"
 #include <linux/io.h>
+#include <linux/slab.h>
+
+#include "bytedev.h"
 
 static inline uint32_t 
-bytedev_get_mode(struct bytedev *bytedev)
+bytedev_get_mode(struct bytedev *dev)
 {
-    return inl(bytedev->io_base + BYTEDEV_REG_MODE);
+    return inl(dev->io_base + BYTEDEV_REG_MODE);
 }
 
 static inline void 
-bytedev_set_mode(struct bytedev *bytedev, int mode)
+bytedev_set_mode(struct bytedev *dev, int mode)
 {
-    outl(mode, bytedev->io_base + BYTEDEV_REG_MODE);
+    outl(mode, dev->io_base + BYTEDEV_REG_MODE);
 }
 
 static inline uint32_t 
-bytedev_get_status(struct bytedev *bytedev)
+bytedev_get_status(struct bytedev *dev)
 {
-    return inl(bytedev->io_base + BYTEDEV_REG_STATUS);
+    return inl(dev->io_base + BYTEDEV_REG_STATUS);
 }
 
 static inline void 
-bytedev_set_status(struct bytedev *bytedev, int status)
+bytedev_set_status(struct bytedev *dev, int status)
 {
-    outl(status, bytedev->io_base + BYTEDEV_REG_STATUS);
+    outl(status, dev->io_base + BYTEDEV_REG_STATUS);
+}
+
+static inline int bytedev_queue_empty(struct bytedev *dev)
+{
+    return dev->head_idx == dev->tail_idx;
+}
+
+static inline int bytedev_queue_full(struct bytedev *dev)
+{
+    if (((dev->tail_idx + 1) % BYTEDEV_MAX_BUFS) == dev->head_idx) {
+        if (dev->data_queue[dev->tail_idx]->len >= BYTEDEV_BUF_SIZE) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static inline int bytedev_queue_last_empty(struct bytedev *dev)
+{
+    int idx = (dev->tail_idx - 1 + BYTEDEV_MAX_BUFS) % BYTEDEV_MAX_BUFS;
+
+    if (!dev->data_queue[idx]) {
+        return 0;
+    }
+
+    return dev->data_queue[idx]->len < BYTEDEV_BUF_SIZE;
 }
 
 static int bytedev_open(struct inode *i, struct file *f)
@@ -59,14 +88,147 @@ static ssize_t bytedev_read(struct file *f,
                             size_t size, 
                             loff_t *loff)
 {
-    return size;
+    struct bytedev *dev = f->private_data;
+    ssize_t ret;
+    ssize_t rlen = 0;
+
+    spin_lock(&dev->dev_lock);
+    printk(KERN_ERR "head_idx: %d, tail_idx: %d", dev->head_idx, dev->tail_idx);
+
+    if (bytedev_queue_empty(dev)) {
+        ret = -EFAULT;
+        goto out;
+    }
+
+    while (size > 0) {
+        if (bytedev_queue_empty(dev)) {
+            ret = rlen;
+            goto out;
+        }
+
+        struct bytedev_data *d = dev->data_queue[dev->head_idx];
+        unsigned int left = d->len - d->offset;
+        unsigned int clen = left > size ? size : left;
+
+        ret = copy_to_user(buf + rlen, &d->data[d->offset], clen);
+        if (ret) {
+            printk(KERN_ERR "[bytedev:] failed while reading the buffer!");
+            goto out;
+        }
+
+        size -= clen;
+        d->offset += clen;
+        rlen += clen;
+
+        if (d->offset == d->len) {
+            if (d->len == BYTEDEV_BUF_SIZE) {
+                kfree(d);
+                dev->data_queue[dev->head_idx] = NULL;
+                dev->head_idx++;
+                dev->head_idx %= BYTEDEV_MAX_BUFS;
+            } else {
+                ret = rlen;
+                break;
+            }
+        }
+    }
+
+    ret = rlen;
+
+out:
+    spin_unlock(&dev->dev_lock);
+
+    return ret;
 }
+
 static ssize_t bytedev_write(struct file *f, 
                             const char __user *buf, 
                             size_t size, 
                             loff_t *loff)
 {
-    return size;
+    struct bytedev *dev = f->private_data;
+    ssize_t ret;
+    ssize_t wlen = 0;
+
+    spin_lock(&dev->dev_lock);
+    printk(KERN_ERR "head_idx: %d, tail_idx: %d", dev->head_idx, dev->tail_idx);
+
+    if (bytedev_queue_full(dev)) {
+        ret = -EFAULT;
+        goto out;
+    }
+
+    while (size > 0) {
+        if (bytedev_queue_full(dev)) {
+            ret = wlen;
+            goto out;
+        }
+
+        /* TODO: something went wrong there, we need to fix it */
+
+        /* fill the unused part of last buffer */
+        if (bytedev_queue_last_empty(dev)) {
+            int d_idx = 
+                    (dev->tail_idx - 1 + BYTEDEV_MAX_BUFS) % BYTEDEV_MAX_BUFS;
+            struct bytedev_data *d = dev->data_queue[d_idx];
+            unsigned int left = BYTEDEV_BUF_SIZE - d->len;
+            unsigned int clen = left > size ? size : left;
+
+            ret = copy_from_user(&d->data[d->len], buf + wlen, clen);
+            if (ret) {
+                printk(KERN_ERR "[bytedev:] failed while writing the buffer!");
+                goto out;
+            }
+
+            size -= clen;
+            d->len += clen;
+            wlen += clen;
+
+            if (size == 0) {
+                break;
+            }
+        }
+
+        struct bytedev_data *d;
+        unsigned int left, clen;
+        int d_idx = dev->tail_idx;
+
+        if (dev->data_queue[d_idx] &&
+            dev->data_queue[d_idx]->len >= BYTEDEV_BUF_SIZE) {
+            d_idx = dev->tail_idx;
+            dev->tail_idx++;
+            dev->tail_idx %= BYTEDEV_MAX_BUFS;
+        }
+
+        if (!dev->data_queue[d_idx]) {
+            dev->data_queue[d_idx] = 
+                    kmalloc(BYTEDEV_BUF_SIZE + sizeof(struct bytedev_data), 
+                            GFP_KERNEL_ACCOUNT);
+            dev->tail_idx++;
+            dev->tail_idx %= BYTEDEV_MAX_BUFS;
+        }
+
+        d = dev->data_queue[d_idx];
+        left = BYTEDEV_BUF_SIZE - d->len;
+        clen = left > size ? size : left;
+
+        ret = copy_from_user(&d->data[d->len], buf + wlen, clen);
+        if (ret) {
+            printk(KERN_ERR "[bytedev:] failed while writing the buffer!");
+            goto out;
+        }
+
+        size -= clen;
+        d->len += clen;
+        wlen += clen;
+    }
+
+    ret = wlen;
+
+out:
+    spin_unlock(&dev->dev_lock);
+
+    return ret;
 }
 
 static int bytedev_release(struct inode *i, struct file *f)
@@ -77,10 +239,10 @@ static int bytedev_release(struct inode *i, struct file *f)
 
 static long bytedev_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 {
-    struct bytedev *bytedev = f->private_data;
+    struct bytedev *dev = f->private_data;
     int err = 0;
 
-    spin_lock(&bytedev_lock_ioctl);
+    spin_lock(&dev->dev_lock);
 
     switch (cmd) {
         case BYTEDEV_MODE_CHANGE:
@@ -92,10 +254,10 @@ static long bytedev_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
                 err = -EACCES;
             } else {
                 if (cmd == BYTEDEV_MODE_CHANGE) {
-                    bytedev_set_mode(bytedev, arg);
+                    bytedev_set_mode(dev, arg);
                     printk(KERN_INFO "[bytedev:] device mode changed." );
                 } else {
-                    bytedev_set_status(bytedev, arg);
+                    bytedev_set_status(dev, arg);
                     printk(KERN_INFO "[bytedev:] device status changed." );
                 }
             }
@@ -105,7 +267,7 @@ static long bytedev_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
             err = -EFAULT;
     }
 
-    spin_unlock(&bytedev_lock_ioctl);
+    spin_unlock(&dev->dev_lock);
 
     return err;
 }
@@ -147,7 +309,7 @@ static int bytedev_get_unused_minor_num(void)
 static int bytedev_pci_probe(struct pci_dev *pdev,
                             const struct pci_device_id *id)
 {
-    struct bytedev *bytedev;
+    struct bytedev *bdev;
     struct device   *dev_node;
     char dname[BYTEDEV_DEVNAME_LENGTH];
     int minor_num;
@@ -156,12 +318,12 @@ static int bytedev_pci_probe(struct pci_dev *pdev,
     printk(KERN_INFO "[bytedev:] ByteDance pci device detected!");
 
     /* alloc space for bytedev struct*/
-    if (!(bytedev = kzalloc(sizeof(struct bytedev), GFP_KERNEL))) {
+    if (!(bdev = kzalloc(sizeof(struct bytedev), GFP_KERNEL))) {
         err = -ENOMEM;
         goto err_no_mem;
     }
 
-    pci_set_drvdata(pdev, bytedev);
+    pci_set_drvdata(pdev, bdev);
 
     /* enable the device */
     if ((err = pci_enable_device(pdev))) {
@@ -192,15 +354,15 @@ static int bytedev_pci_probe(struct pci_dev *pdev,
     }
 
     /* iomap for mmio space */
-    bytedev->mmio_addr = pci_ioremap_bar(pdev, 0);
-    if (!bytedev->mmio_addr) {
+    bdev->mmio_addr = pci_ioremap_bar(pdev, 0);
+    if (!bdev->mmio_addr) {
         printk(KERN_ERR "Cannot ioremap for MMIO space, abort.");
         err = -ENOMEM;
         goto err_out_free_region;
     }
 
     /* get I/O ports base */
-    bytedev->io_base = pci_resource_start(pdev, 1);
+    bdev->io_base = pci_resource_start(pdev, 1);
 
     /* register device node */
     minor_num = bytedev_get_unused_minor_num();
@@ -224,11 +386,17 @@ static int bytedev_pci_probe(struct pci_dev *pdev,
         goto err_out_unuse_minor;
     }
 
+    /* other data init */
+    spin_lock_init(&bdev->dev_lock);
+    memset(bdev->data_queue, 0, sizeof(void*) * BYTEDEV_MAX_BUFS);
+    bdev->head_idx = 0;
+    bdev->tail_idx = 0;
+
     /* info records */
-    bytedev->pdev = pdev;
-    bytedev->dev_node = dev_node;
-    bytedev->minor_num = minor_num;
-    bytedev_arr[minor_num] = bytedev;
+    bdev->pdev = pdev;
+    bdev->dev_node = dev_node;
+    bdev->minor_num = minor_num;
+    bytedev_arr[minor_num] = bdev;
 
     printk(KERN_INFO "[bytedev:] bytedev%d register complete.", minor_num);
 
@@ -237,13 +405,13 @@ static int bytedev_pci_probe(struct pci_dev *pdev,
 err_out_unuse_minor:
     bytedev_set_unused_minor_num(minor_num);
 err_out_iounmap_mmio:
-    pci_iounmap(pdev, bytedev->mmio_addr);
+    pci_iounmap(pdev, bdev->mmio_addr);
 err_out_free_region:
     pci_release_regions(pdev);
 err_out_disable_pdev:
     pci_disable_device(pdev);
 err_out_free_dev:
-    kfree(bytedev);
+    kfree(bdev);
 err_no_mem:
     return err;
 }
@@ -277,7 +445,6 @@ static int __init bytedev_init(void)
 
     /* init basic args for driver */
     spin_lock_init(&bytedev_lock_minor_num);
-    spin_lock_init(&bytedev_lock_ioctl);
     memset(bytedev_minor_num, 0, sizeof(bytedev_minor_num));
     memset(bytedev_arr, 0, sizeof(bytedev_arr));
 

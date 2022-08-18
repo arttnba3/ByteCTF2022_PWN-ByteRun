@@ -1,7 +1,7 @@
 /* 
  * ByteCTF2022 kernel module
  * 
- * Copyright (c) 2022 ByteDance Inc.
+ * Copyright (c) 2022 ByteDance Corp.
  * Author: arttnba3 <arttnba@gmail.com>
  * 
  * This module is developed for ByteCTF2022 - Pwn - ByteChain.
@@ -34,6 +34,9 @@
 #define BYTEDEV_MODE_CHANGE 0x114514
 #define BYTEDEV_STATUS_CHANGE 0x1919810
 
+#define BYTEDEV_MAX_BUFS 0x10
+#define BYTEDEV_BUF_SIZE 4096
+
 enum BYTEDEV_REG {
     BYTEDEV_REG_MODE = 0,
     BYTEDEV_REG_STATUS,
@@ -48,9 +51,15 @@ struct bytedev_pmio {
     u32     rx_addr;
 };
 
-struct bytedev_msg {
-    struct bytedev_msg  *next;
-    size_t size;
+struct bytedev_vring {
+    int     num;
+    int     *desc;
+    int     *avail;
+    int     *used;
+};
+
+struct bytedev_data {
+    unsigned int offset, len;
     char data[0];
 };
 
@@ -60,9 +69,12 @@ struct bytedev {
     int minor_num;
     u64 __iomem  *mmio_addr;
     u64 io_base;
-    void *tx_ring_desc;
-    void *rx_ring_desc;
-    void *data_buf;
+
+    spinlock_t dev_lock;
+    struct bytedev_data *data_queue[BYTEDEV_MAX_BUFS];
+    int head_idx, tail_idx;
+
+    struct bytedev_vring vring;
 };
 
 static struct bytedev *bytedev_arr[BYTEDEV_MAX_DEVICE_NUM];
@@ -71,7 +83,7 @@ static struct cdev  bytedev_cdev;
 static struct class *bytedev_class;
 static int  bytedev_major_num;
 static int  bytedev_minor_num[BYTEDEV_MAX_DEVICE_NUM];
-static spinlock_t bytedev_lock_minor_num, bytedev_lock_ioctl;
+static spinlock_t bytedev_lock_minor_num;
 
 static int bytedev_open(struct inode *i, struct file *f);
 static ssize_t bytedev_read(struct file *f, 
