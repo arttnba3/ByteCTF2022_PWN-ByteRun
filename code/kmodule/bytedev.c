@@ -93,7 +93,6 @@ static ssize_t bytedev_read(struct file *f,
     ssize_t rlen = 0;
 
     spin_lock(&dev->dev_lock);
-    printk(KERN_ERR "head_idx: %d, tail_idx: %d", dev->head_idx, dev->tail_idx);
 
     if (bytedev_queue_empty(dev)) {
         ret = -EFAULT;
@@ -151,7 +150,6 @@ static ssize_t bytedev_write(struct file *f,
     ssize_t wlen = 0;
 
     spin_lock(&dev->dev_lock);
-    printk(KERN_ERR "head_idx: %d, tail_idx: %d", dev->head_idx, dev->tail_idx);
 
     if (bytedev_queue_full(dev)) {
         ret = -EFAULT;
