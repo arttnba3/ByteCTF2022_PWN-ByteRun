@@ -164,9 +164,10 @@ static ssize_t bytedev_write(struct file *f,
             goto out;
         }
 
-        /* TODO: something went wrong there, we need to fix it */
-
-        /* fill the unused part of last buffer */
+        /**
+         * Fill the unused part of last buffer.
+         * We mainly fill the data that is less than BYTEDEV_BUF_SIZE there.
+         */
         if (bytedev_queue_last_empty(dev)) {
             int d_idx = 
                     (dev->tail_idx - 1 + BYTEDEV_MAX_BUFS) % BYTEDEV_MAX_BUFS;
@@ -184,32 +185,29 @@ static ssize_t bytedev_write(struct file *f,
             d->len += clen;
             wlen += clen;
 
-            if (size == 0) {
-                break;
-            }
+            continue;
         }
 
         struct bytedev_data *d;
         unsigned int left, clen;
         int d_idx = dev->tail_idx;
 
-        if (dev->data_queue[d_idx] &&
-            dev->data_queue[d_idx]->len >= BYTEDEV_BUF_SIZE) {
-            d_idx = dev->tail_idx;
-            dev->tail_idx++;
-            dev->tail_idx %= BYTEDEV_MAX_BUFS;
-        }
-
-        if (!dev->data_queue[d_idx]) {
-            dev->data_queue[d_idx] = 
+        /**
+         * When we arrive at there, it means that there's no space left
+         * on the tail buffer, so we alloc a new buffer there.
+         */
+        dev->data_queue[d_idx] = 
                     kmalloc(BYTEDEV_BUF_SIZE + sizeof(struct bytedev_data), 
                             GFP_KERNEL_ACCOUNT);
-            dev->tail_idx++;
-            dev->tail_idx %= BYTEDEV_MAX_BUFS;
-        }
+        dev->tail_idx++;
+        dev->tail_idx %= BYTEDEV_MAX_BUFS;
 
         d = dev->data_queue[d_idx];
-        left = BYTEDEV_BUF_SIZE - d->len;
+        d->len = 0;
+        d->offset = 0;
+
+        /* Copy the data there */
+        left = BYTEDEV_BUF_SIZE;
         clen = left > size ? size : left;
 
         ret = copy_from_user(&d->data[d->len], buf + wlen, clen);

@@ -27,7 +27,7 @@ cd build
 ../qemu-7.0.0/configure \
     --enable-kvm \
     --target-list=x86_64-softmmu \
-    --enable-debug
+    --disable-debug
 if make
 then
     cp ./qemu-system-x86_64 ../../environ/
