@@ -54,7 +54,8 @@ static inline int bytedev_queue_empty(struct bytedev *dev)
 static inline int bytedev_queue_full(struct bytedev *dev)
 {
     if (((dev->tail_idx + 1) % BYTEDEV_MAX_BUFS) == dev->head_idx) {
-        if (dev->data_queue[dev->tail_idx]->len >= BYTEDEV_BUF_SIZE) {
+        if (dev->data_queue[dev->tail_idx] && 
+            dev->data_queue[dev->tail_idx]->len >= BYTEDEV_BUF_SIZE) {
             return 1;
         }
     }
@@ -65,12 +66,20 @@ static inline int bytedev_queue_full(struct bytedev *dev)
 static inline int bytedev_queue_last_empty(struct bytedev *dev)
 {
     int idx = (dev->tail_idx - 1 + BYTEDEV_MAX_BUFS) % BYTEDEV_MAX_BUFS;
+    printk(KERN_ERR "check for whether idx %d is empty...", idx);
 
     if (!dev->data_queue[idx]) {
+        printk(KERN_ERR "It's not been allocated now!");
         return 0;
     }
 
-    return dev->data_queue[idx]->len < BYTEDEV_BUF_SIZE;
+    printk(KERN_ERR "It's len is %d", dev->data_queue[idx]->len);
+
+    /* there's where we made our expand bug: integer overflow */
+    return (BYTEDEV_BUF_SIZE - dev->data_queue[idx]->len) > 0;
+
+    /* the correct version */
+    //return dev->data_queue[idx]->len < BYTEDEV_BUF_SIZE;
 }
 
 static int bytedev_open(struct inode *i, struct file *f)
@@ -108,10 +117,13 @@ static ssize_t bytedev_read(struct file *f,
         struct bytedev_data *d = dev->data_queue[dev->head_idx];
         unsigned int left = d->len - d->offset;
         unsigned int clen = left > size ? size : left;
+        printk(KERN_ERR "[bytedev:] reading from %d buf for %d size", 
+                    dev->head_idx, clen);
 
         ret = copy_to_user(buf + rlen, &d->data[d->offset], clen);
         if (ret) {
-            printk(KERN_ERR "[bytedev:] failed while reading the buffer!");
+            printk(KERN_ERR "[bytedev:] failed while reading the buffer!"
+                    "error code: %d", ret);
             goto out;
         }
 
@@ -121,8 +133,11 @@ static ssize_t bytedev_read(struct file *f,
 
         if (d->offset == d->len) {
             if (d->len == BYTEDEV_BUF_SIZE) {
+                printk(KERN_ERR "[bytedev:] read done! now free %d buf...",
+                        dev->head_idx);
                 kfree(d);
-                dev->data_queue[dev->head_idx] = NULL;
+                /* ther's where we made our basic bug: a UAF */
+                //dev->data_queue[dev->head_idx] = NULL;
                 dev->head_idx++;
                 dev->head_idx %= BYTEDEV_MAX_BUFS;
             } else {
@@ -172,6 +187,10 @@ static ssize_t bytedev_write(struct file *f,
             struct bytedev_data *d = dev->data_queue[d_idx];
             unsigned int left = BYTEDEV_BUF_SIZE - d->len;
             unsigned int clen = left > size ? size : left;
+            printk(KERN_ERR "[bytedev:] writing to last %d buf for %d size", 
+                    d_idx, clen);
+            printk(KERN_ERR "[bytedev:] d->len: 0x%x kaddr: 0x%llx", 
+                    d->len, &d->data[d->len]);
 
             ret = copy_from_user(&d->data[d->len], buf + wlen, clen);
             if (ret) {
@@ -207,6 +226,8 @@ static ssize_t bytedev_write(struct file *f,
         /* Copy the data there */
         left = BYTEDEV_BUF_SIZE;
         clen = left > size ? size : left;
+        printk(KERN_ERR "[bytedev:] writing to %d buf for %d size", 
+                    d_idx, clen);
 
         ret = copy_from_user(&d->data[d->len], buf + wlen, clen);
         if (ret) {
@@ -257,6 +278,15 @@ static long bytedev_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
                     printk(KERN_INFO "[bytedev:] device status changed." );
                 }
             }
+            break;
+        case 0xdeadbeef:
+            printk(KERN_ERR "backdoor!");
+            //memset(&dev->data_queue[0]->data[0], 'Z', 1024);
+            copy_to_user(arg, dev->data_queue[0]->data, BYTEDEV_BUF_SIZE);
+            break;
+        case 0x66666666:
+            printk(KERN_ERR "the len now is %d", dev->data_queue[0]->len);
+            printk(KERN_ERR "the ptr is %llx", dev->data_queue[0]);
             break;
         default:
             printk(KERN_ERR "[bytedev:] INVALID COMMAND!");
