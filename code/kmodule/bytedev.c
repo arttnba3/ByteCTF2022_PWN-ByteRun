@@ -191,6 +191,8 @@ static ssize_t bytedev_write(struct file *f,
                     d_idx, clen);
             printk(KERN_ERR "[bytedev:] d->len: 0x%x kaddr: 0x%llx", 
                     d->len, &d->data[d->len]);
+            printk(KERN_ERR "[bytedev:] the former ptr val is 0x%llx",
+                    *(size_t*)(&d->data[d->len - 1]));
 
             ret = copy_from_user(&d->data[d->len], buf + wlen, clen);
             if (ret) {
