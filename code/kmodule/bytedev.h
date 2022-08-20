@@ -35,7 +35,7 @@
 #define BYTEDEV_STATUS_CHANGE 0x1919810
 
 #define BYTEDEV_MAX_BUFS 0x10
-#define BYTEDEV_BUF_SIZE 4096
+#define BYTEDEV_BUF_SIZE (4096 - sizeof(struct bytedev_data))
 
 enum BYTEDEV_REG {
     BYTEDEV_REG_MODE = 0,
@@ -59,7 +59,7 @@ struct bytedev_vring {
 };
 
 struct bytedev_data {
-    unsigned int offset, len;
+    unsigned short len, offset;
     char data[0];
 };
 
