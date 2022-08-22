@@ -4,7 +4,7 @@
  * Copyright (c) 2022 ByteDance Corp.
  * Author: arttnba3 <arttnba@gmail.com>
  * 
- * This module is developed for ByteCTF2022 - Pwn - ByteChain.
+ * This module is developed for ByteCTF2022 - Pwn - ByteRun.
  */
 
 #include <linux/module.h>
@@ -19,6 +19,7 @@
 #include <linux/cdev.h>
 #include <linux/io.h>
 #include <linux/slab.h>
+#include <linux/dma-mapping.h>
 
 #include "bytedev.h"
 
@@ -31,19 +32,25 @@ bytedev_get_mode(struct bytedev *dev)
 static inline void 
 bytedev_set_mode(struct bytedev *dev, int mode)
 {
-    outl(mode, dev->io_base + BYTEDEV_REG_MODE);
+    outl(mode, dev->io_base + BYTEDEV_REG_BLK_STATUS);
 }
 
 static inline uint32_t 
-bytedev_get_status(struct bytedev *dev)
+bytedev_get_blk_status(struct bytedev *dev)
 {
-    return inl(dev->io_base + BYTEDEV_REG_STATUS);
+    return inl(dev->io_base + BYTEDEV_REG_BLK_STATUS);
+}
+
+static inline uint32_t 
+bytedev_get_blk_idx(struct bytedev *dev)
+{
+    return inl(dev->io_base + BYTEDEV_REG_BLK_IDX);
 }
 
 static inline void 
-bytedev_set_status(struct bytedev *dev, int status)
+bytedev_set_blk_idx(struct bytedev *dev, int idx)
 {
-    outl(status, dev->io_base + BYTEDEV_REG_STATUS);
+    outl(idx, dev->io_base + BYTEDEV_REG_BLK_IDX);
 }
 
 static inline int bytedev_queue_empty(struct bytedev *dev)
@@ -66,14 +73,10 @@ static inline int bytedev_queue_full(struct bytedev *dev)
 static inline int bytedev_queue_last_empty(struct bytedev *dev)
 {
     int idx = (dev->tail_idx - 1 + BYTEDEV_MAX_BUFS) % BYTEDEV_MAX_BUFS;
-    printk(KERN_ERR "check for whether idx %d is empty...", idx);
 
     if (!dev->data_queue[idx]) {
-        printk(KERN_ERR "It's not been allocated now!");
         return 0;
     }
-
-    printk(KERN_ERR "It's len is %d", dev->data_queue[idx]->len);
 
     /* there's where we made our expand bug: integer overflow */
     return (BYTEDEV_BUF_SIZE - dev->data_queue[idx]->len) > 0;
@@ -92,7 +95,7 @@ static int bytedev_open(struct inode *i, struct file *f)
     return 0;
 }
 
-static ssize_t bytedev_read(struct file *f, 
+static ssize_t bytedev_stream_read(struct file *f, 
                             char __user *buf, 
                             size_t size, 
                             loff_t *loff)
@@ -101,29 +104,31 @@ static ssize_t bytedev_read(struct file *f,
     ssize_t ret;
     ssize_t rlen = 0;
 
-    spin_lock(&dev->dev_lock);
-
     if (bytedev_queue_empty(dev)) {
         ret = -EFAULT;
         goto out;
     }
 
     while (size > 0) {
+        struct bytedev_data *d;
+        unsigned int left, clen;
+
+        /**
+         * If the data queue is already empty,
+         * just quit out is OK.
+         */
         if (bytedev_queue_empty(dev)) {
             ret = rlen;
             goto out;
         }
 
-        struct bytedev_data *d = dev->data_queue[dev->head_idx];
-        unsigned int left = d->len - d->offset;
-        unsigned int clen = left > size ? size : left;
-        printk(KERN_ERR "[bytedev:] reading from %d buf for %d size", 
-                    dev->head_idx, clen);
+        d = dev->data_queue[dev->head_idx];
+        left = d->len - d->offset;
+        clen = left > size ? size : left;
 
         ret = copy_to_user(buf + rlen, &d->data[d->offset], clen);
         if (ret) {
-            printk(KERN_ERR "[bytedev:] failed while reading the buffer!"
-                    "error code: %d", ret);
+            printk(KERN_ERR "[bytedev:] failed while reading the buffer!");
             goto out;
         }
 
@@ -133,8 +138,6 @@ static ssize_t bytedev_read(struct file *f,
 
         if (d->offset == d->len) {
             if (d->len == BYTEDEV_BUF_SIZE) {
-                printk(KERN_ERR "[bytedev:] read done! now free %d buf...",
-                        dev->head_idx);
                 kfree(d);
                 /* ther's where we made our basic bug: a UAF */
                 //dev->data_queue[dev->head_idx] = NULL;
@@ -150,12 +153,64 @@ static ssize_t bytedev_read(struct file *f,
     ret = rlen;
 
 out:
+
+    return ret;
+}
+
+static ssize_t bytedev_blk_read(struct file *f, 
+                            char __user *buf, 
+                            size_t size, 
+                            loff_t *loff)
+{
+    struct bytedev *dev = f->private_data;
+    size_t rlen = size > BYTEDEV_SECTOR_SIZE ? BYTEDEV_SECTOR_SIZE : size;
+
+    if (bytedev_get_mode(dev) != BYTEDEV_MODE_BLK) {
+        printk(KERN_ERR "[bytedev:] invalid operation in non-blk mode!");
+        return -EFAULT;
+    }
+
+    if (bytedev_get_blk_status(dev) != BYTEDEV_BLK_STATUS_READY) {
+        printk(KERN_ERR "[bytedev:] device not ready!");
+        return -EFAULT;
+    }
+
+    if (copy_to_user(buf, dev->mmio_addr, rlen)) {
+        printk(KERN_ERR "[bytedev:] failed to read from dev!");
+        return -EFAULT;
+    }
+
+    return rlen;
+}
+
+static ssize_t bytedev_read(struct file *f, 
+                            char __user *buf, 
+                            size_t size, 
+                            loff_t *loff)
+{
+    struct bytedev *dev = f->private_data;
+    ssize_t ret;
+
+    spin_lock(&dev->dev_lock);
+
+    switch (bytedev_get_mode(dev)) {
+        case BYTEDEV_MODE_STREAM:
+            ret = bytedev_stream_read(f, buf, size, loff);
+            break;
+        case BYTEDEV_MODE_BLK:
+            ret = bytedev_blk_read(f, buf, size, loff);
+            break;
+        default:
+            printk(KERN_ERR "[bytedev:] invalid mode of devices!");
+            ret = -EFAULT;
+    }
+
     spin_unlock(&dev->dev_lock);
 
     return ret;
 }
 
-static ssize_t bytedev_write(struct file *f, 
+static ssize_t bytedev_stream_write(struct file *f, 
                             const char __user *buf, 
                             size_t size, 
                             loff_t *loff)
@@ -164,14 +219,20 @@ static ssize_t bytedev_write(struct file *f,
     ssize_t ret;
     ssize_t wlen = 0;
 
-    spin_lock(&dev->dev_lock);
-
     if (bytedev_queue_full(dev)) {
         ret = -EFAULT;
         goto out;
     }
 
     while (size > 0) {
+        struct bytedev_data *d;
+        unsigned int left, clen;
+        int d_idx;
+
+        /**
+         * If the data queue is already full,
+         * just quit out is OK.
+         */
         if (bytedev_queue_full(dev)) {
             ret = wlen;
             goto out;
@@ -187,12 +248,6 @@ static ssize_t bytedev_write(struct file *f,
             struct bytedev_data *d = dev->data_queue[d_idx];
             unsigned int left = BYTEDEV_BUF_SIZE - d->len;
             unsigned int clen = left > size ? size : left;
-            printk(KERN_ERR "[bytedev:] writing to last %d buf for %d size", 
-                    d_idx, clen);
-            printk(KERN_ERR "[bytedev:] d->len: 0x%x kaddr: 0x%llx", 
-                    d->len, &d->data[d->len]);
-            printk(KERN_ERR "[bytedev:] the former ptr val is 0x%llx",
-                    *(size_t*)(&d->data[d->len - 1]));
 
             ret = copy_from_user(&d->data[d->len], buf + wlen, clen);
             if (ret) {
@@ -207,14 +262,11 @@ static ssize_t bytedev_write(struct file *f,
             continue;
         }
 
-        struct bytedev_data *d;
-        unsigned int left, clen;
-        int d_idx = dev->tail_idx;
-
         /**
          * When we arrive at there, it means that there's no space left
          * on the tail buffer, so we alloc a new buffer there.
          */
+        d_idx = dev->tail_idx;
         dev->data_queue[d_idx] = 
                     kmalloc(BYTEDEV_BUF_SIZE + sizeof(struct bytedev_data), 
                             GFP_KERNEL_ACCOUNT);
@@ -228,8 +280,6 @@ static ssize_t bytedev_write(struct file *f,
         /* Copy the data there */
         left = BYTEDEV_BUF_SIZE;
         clen = left > size ? size : left;
-        printk(KERN_ERR "[bytedev:] writing to %d buf for %d size", 
-                    d_idx, clen);
 
         ret = copy_from_user(&d->data[d->len], buf + wlen, clen);
         if (ret) {
@@ -245,6 +295,58 @@ static ssize_t bytedev_write(struct file *f,
     ret = wlen;
 
 out:
+
+    return ret;
+}
+
+static ssize_t bytedev_blk_write(struct file *f, 
+                            const char __user *buf, 
+                            size_t size, 
+                            loff_t *loff)
+{
+    struct bytedev *dev = f->private_data;
+    size_t wlen = size > BYTEDEV_SECTOR_SIZE ? BYTEDEV_SECTOR_SIZE : size;
+
+    if (bytedev_get_mode(dev) != BYTEDEV_MODE_BLK) {
+        printk(KERN_ERR "[bytedev:] invalid operation in non-blk mode!");
+        return -EFAULT;
+    }
+
+    if (bytedev_get_blk_status(dev) != BYTEDEV_BLK_STATUS_READY) {
+        printk(KERN_ERR "[bytedev:] device not ready!");
+        return -EFAULT;
+    }
+
+    if (copy_from_user(dev->mmio_addr, buf, wlen)) {
+        printk(KERN_ERR "[bytedev:] failed to write on dev!");
+        return -EFAULT;
+    }
+
+    return wlen;
+}
+
+static ssize_t bytedev_write(struct file *f, 
+                            const char __user *buf, 
+                            size_t size, 
+                            loff_t *loff)
+{
+    struct bytedev *dev = f->private_data;
+    ssize_t ret;
+
+    spin_lock(&dev->dev_lock);
+
+    switch (bytedev_get_mode(dev)) {
+        case BYTEDEV_MODE_STREAM:
+            ret = bytedev_stream_write(f, buf, size, loff);
+            break;
+        case BYTEDEV_MODE_BLK:
+            ret = bytedev_blk_write(f, buf, size, loff);
+            break;
+        default:
+            printk(KERN_ERR "[bytedev:] invalid mode of devices!");
+            ret = -EFAULT;
+    }
+
     spin_unlock(&dev->dev_lock);
 
     return ret;
@@ -265,30 +367,23 @@ static long bytedev_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 
     switch (cmd) {
         case BYTEDEV_MODE_CHANGE:
-        case BYTEDEV_STATUS_CHANGE:
             if (!uid_eq(current_uid(), GLOBAL_ROOT_UID)) {
                 printk(KERN_ERR
                     "[bytedev:] Permission denied, root privilege needed."
                 );
                 err = -EACCES;
             } else {
-                if (cmd == BYTEDEV_MODE_CHANGE) {
-                    bytedev_set_mode(dev, arg);
-                    printk(KERN_INFO "[bytedev:] device mode changed." );
-                } else {
-                    bytedev_set_status(dev, arg);
-                    printk(KERN_INFO "[bytedev:] device status changed." );
-                }
+                bytedev_set_mode(dev, arg);
+                printk(KERN_INFO "[bytedev:] device mode changed." );
             }
             break;
-        case 0xdeadbeef:
-            printk(KERN_ERR "backdoor!");
-            //memset(&dev->data_queue[0]->data[0], 'Z', 1024);
-            copy_to_user(arg, dev->data_queue[0]->data, BYTEDEV_BUF_SIZE);
-            break;
-        case 0x66666666:
-            printk(KERN_ERR "the len now is %d", dev->data_queue[0]->len);
-            printk(KERN_ERR "the ptr is %llx", dev->data_queue[0]);
+        case BYTEDEV_BLK_IDX_CHANGE:
+            if(bytedev_get_mode(dev) != BYTEDEV_MODE_BLK) {
+                printk(KERN_ERR "[bytedev:] device not in blk-mode!");
+                err = -EFAULT;
+            } else {
+                bytedev_set_blk_idx(dev, arg);
+            }
             break;
         default:
             printk(KERN_ERR "[bytedev:] INVALID COMMAND!");
@@ -451,8 +546,11 @@ static void bytedev_resource_release(struct bytedev *bytedev)
     pci_iounmap(bytedev->pdev, bytedev->mmio_addr);
     pci_release_regions(bytedev->pdev);
     pci_disable_device(bytedev->pdev);
-    device_destroy(bytedev_class, 
-                    MKDEV(bytedev_major_num, bytedev->minor_num));
+    /**
+     * TODO: fix the NULL-dereference bug there
+     */
+    /*device_destroy(bytedev_class, 
+                    MKDEV(bytedev_major_num, bytedev->minor_num));*/
     bytedev_set_unused_minor_num(bytedev->minor_num);
     kfree(bytedev);
 }

