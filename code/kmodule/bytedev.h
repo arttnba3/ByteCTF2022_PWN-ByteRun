@@ -4,7 +4,7 @@
  * Copyright (c) 2022 ByteDance Corp.
  * Author: arttnba3 <arttnba@gmail.com>
  * 
- * This module is developed for ByteCTF2022 - Pwn - ByteChain.
+ * This module is developed for ByteCTF2022 - Pwn - ByteRun.
  */
 
 #include <linux/module.h>
@@ -16,14 +16,18 @@
 #include <linux/virtio.h>
 #include <linux/types.h>
 #include <linux/cdev.h>
+#include <linux/dma-mapping.h>
 
 #define DEVICE_NAME "bytedev"
 #define CLASS_NAME "bytedev_module"
 
 #define DRV_NAME "ByteDance-CTFDevice"
 
-#define BYTEDEV_MMIO_SIZE 0x1000
-#define BYTEDEV_PMIO_SIZE 0x10
+#define BYTEDEV_SECTOR_SIZE 512
+#define BYTEDEV_SECTOR_NUM 256
+
+#define BYTEDEV_MMIO_SIZE (BYTEDEV_SECTOR_SIZE)
+#define BYTEDEV_PMIO_SIZE (BYTEDEV_REG_TYPES)
 
 #define PCI_VENDOR_ID_BYTEDEV 0x4441
 #define PCI_DEVICE_ID_BYTEDEV 0x7A9F
@@ -32,30 +36,30 @@
 #define BYTEDEV_MAX_DEVICE_NUM 256
 
 #define BYTEDEV_MODE_CHANGE 0x114514
-#define BYTEDEV_STATUS_CHANGE 0x1919810
+#define BYTEDEV_BLK_IDX_CHANGE 0x1919810
 
 #define BYTEDEV_MAX_BUFS 0x10
 #define BYTEDEV_BUF_SIZE (4096 - sizeof(struct bytedev_data))
 
 enum BYTEDEV_REG {
     BYTEDEV_REG_MODE = 0,
-    BYTEDEV_REG_STATUS,
-    BYTEDEV_REG_TX,
-    BYTEDEV_REG_RX,
+    BYTEDEV_REG_BLK_IDX,
+    BYTEDEV_REG_BLK_STATUS,
+
+    BYTEDEV_REG_TYPES,
 };
 
-struct bytedev_pmio {
-    u32     mode;
-    u32     status;
-    u32     tx_addr;
-    u32     rx_addr;
+enum BYTEDEV_MODE {
+    BYTEDEV_MODE_STREAM = 0,
+    BYTEDEV_MODE_BLK,
 };
 
-struct bytedev_vring {
-    int     num;
-    int     *desc;
-    int     *avail;
-    int     *used;
+enum BYTEDEV_BLK_STATUS {
+    BYTEDEV_BLK_STATUS_INIT = 0,
+    BYTEDEV_BLK_STATUS_BUSY,
+    BYTEDEV_BLK_STATUS_READY,
+
+    BYTEDEV_BLK_STATUS_TYPES,
 };
 
 struct bytedev_data {
@@ -73,8 +77,6 @@ struct bytedev {
     spinlock_t dev_lock;
     struct bytedev_data *data_queue[BYTEDEV_MAX_BUFS];
     int head_idx, tail_idx;
-
-    struct bytedev_vring vring;
 };
 
 static struct bytedev *bytedev_arr[BYTEDEV_MAX_DEVICE_NUM];
