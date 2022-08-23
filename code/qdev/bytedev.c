@@ -62,11 +62,10 @@ typedef struct BYTEPCIDevState {
     /*< public >*/
     BYTEPCIDevRegs regs;
 
-    char **blk_mem;
-    int blk_num;
-
     MemoryRegion mmio;
     MemoryRegion pmio;
+
+    char *blk_mem[BYTEDEV_SECTOR_NUM];
 } BYTEPCIDevState;
 
 typedef struct BYTEPCIDevClass {
@@ -193,14 +192,14 @@ byte_dev_pmio_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
              * There's where we made our basic bug: OOB rw forward 
              * Because there's no check for minus idx there.
              * */
-            if (op_idx >= ds->blk_num) {
+            if (op_idx >= BYTEDEV_SECTOR_NUM) {
                 return ;
             }
 
             ds->regs.blk_idx = op_idx;
             ds->regs.blk_status = BYTEDEV_BLK_STATUS_BUSY;
             if (!ds->blk_mem[ds->regs.blk_idx]) {
-                ds->blk_mem[ds->regs.blk_idx] = g_malloc0(BYTEDEV_SECTOR_SIZE);
+                ds->blk_mem[ds->regs.blk_idx] = g_malloc(BYTEDEV_SECTOR_SIZE);
             }
             ds->regs.blk_status = BYTEDEV_BLK_STATUS_READY;
             break;
@@ -245,8 +244,7 @@ static void byte_dev_realize(PCIDevice *pci_dev, Error **errp)
     ds->regs.mode = BYTEDEV_MODE_STREAM;
     ds->regs.blk_idx = 0;
     ds->regs.blk_status = BYTEDEV_BLK_STATUS_INIT;
-    ds->blk_num = BYTEDEV_SECTOR_NUM;
-    ds->blk_mem = g_malloc0(sizeof(void*) * BYTEDEV_SECTOR_NUM);
+    memset(ds->blk_mem, 0, sizeof(char*) * BYTEDEV_SECTOR_NUM);
 
     /* PCI resources register */
     memory_region_init_io(&ds->mmio, OBJECT(ds), &byte_dev_mmio_ops,

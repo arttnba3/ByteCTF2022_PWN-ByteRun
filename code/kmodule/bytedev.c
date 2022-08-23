@@ -32,7 +32,7 @@ bytedev_get_mode(struct bytedev *dev)
 static inline void 
 bytedev_set_mode(struct bytedev *dev, int mode)
 {
-    outl(mode, dev->io_base + BYTEDEV_REG_BLK_STATUS);
+    outl(mode, dev->io_base + BYTEDEV_REG_MODE);
 }
 
 static inline uint32_t 

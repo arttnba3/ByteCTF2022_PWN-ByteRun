@@ -10,4 +10,4 @@
     -device byte_dev-pci \
     -s \
     -no-reboot \
-    -monitor /dev/null
+    #-monitor /dev/null
