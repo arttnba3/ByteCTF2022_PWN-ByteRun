@@ -8,6 +8,5 @@
     -m 128M \
     -nographic \
     -device byte_dev-pci \
-    -s \
     -no-reboot \
     -monitor /dev/null
