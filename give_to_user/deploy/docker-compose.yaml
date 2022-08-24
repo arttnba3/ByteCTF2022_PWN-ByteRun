@@ -1,0 +1,12 @@
+version: "3"
+
+services:
+  pwn:
+    build: ./
+    environment:
+      CTF_CHALLENGE_FLAG: bytectf{testflag}
+      CTF_CHALLENGE_ID: 123456789abcdef01234567890000000
+    ports:
+      - "1337:1234"
+
+# docker build -t bytectf/demo-pwn_rce-pwn:v0.1 .
