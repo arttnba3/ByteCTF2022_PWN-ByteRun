@@ -13,8 +13,8 @@ fi
 
 
 # 初始化 FLAG (写文件)
-echo $CTF_CHALLENGE_FLAG > /home/ctf/flag
-chmod 444 /home/ctf/flag
+echo $CTF_CHALLENGE_FLAG > /flag
+chmod 444 /flag
 
 # 初始化 FLAG (写环境变量)
 export FLAG=$CTF_CHALLENGE_FLAG
