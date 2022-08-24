@@ -367,7 +367,8 @@ static long bytedev_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 
     switch (cmd) {
         case BYTEDEV_MODE_CHANGE:
-            if (!uid_eq(current_uid(), GLOBAL_ROOT_UID)) {
+            if (!uid_eq(current_uid(), GLOBAL_ROOT_UID)
+                || !uid_eq(current_euid(), GLOBAL_ROOT_UID)) {
                 printk(KERN_ERR
                     "[bytedev:] Permission denied, root privilege needed."
                 );
