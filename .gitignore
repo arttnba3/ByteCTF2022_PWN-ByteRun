@@ -1,0 +1,5 @@
+kernel/
+qemu/
+filesystem/
+.vscode/
+.gdb_history
